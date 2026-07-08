@@ -70,16 +70,17 @@ function findAnchoredEl(doc: Document, pin: Pin): Element | null {
   return cands.find((el) => elText(el) === pin.anchorText) ?? null;
 }
 
-// 저장된 오프너(모달/탭 트리거) — 레거시 JSON 경로면 가장 마지막(직접 트리거)만 사용
-function openerOf(pin: Pin): string | null {
-  if (!pin.openerSelector) return null;
+// 저장된 클릭 경로(탭/모달 트리거). 최신→과거 순으로 반환해 가장 최근 트리거부터 시도
+function openerTrail(pin: Pin): string[] {
+  if (!pin.openerSelector) return [];
+  let trail: string[] = [];
   try {
     const parsed = JSON.parse(pin.openerSelector);
-    if (Array.isArray(parsed)) return parsed[parsed.length - 1] ?? null;
+    trail = Array.isArray(parsed) ? parsed : [pin.openerSelector];
   } catch {
-    /* 일반 문자열 */
+    trail = [pin.openerSelector];
   }
-  return pin.openerSelector;
+  return [...trail].reverse();
 }
 
 export default function HtmlViewer({
@@ -100,8 +101,8 @@ export default function HtmlViewer({
   const pinRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   // 모달 등으로 숨겨진 요소를 강제 표시했을 때 되돌리기 위한 복원 함수들
   const revealRestoreRef = useRef<Array<() => void>>([]);
-  // iframe 안에서 마지막으로 클릭한 요소(모달/탭 트리거 추정)
-  const lastClickRef = useRef<string | null>(null);
+  // iframe 안 최근 클릭 경로(탭/모달 트리거 재생용, 최신이 마지막)
+  const clickTrailRef = useRef<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [size, setSize] = useState({ w: 1000, h: 700 });
 
@@ -261,15 +262,18 @@ export default function HtmlViewer({
     };
 
     (async () => {
-      // 올바른(텍스트 일치) 요소가 아직 안 보이면 오프너(모달/탭 트리거)를 한 번 클릭
+      // 올바른(텍스트 일치) 요소가 안 보이면, 클릭 경로를 최신→과거 순으로 재생
+      // (탭 버튼/모달 버튼에서 대상이 보이면 즉시 멈춰 불필요한 클릭 방지)
       let el = findTarget();
       if (!el || !isVisible(el)) {
-        const opener = openerOf(pin);
-        if (opener) {
-          const step = query(opener);
+        for (const sel of openerTrail(pin)) {
+          if (cancelled) return;
+          const cur = findTarget();
+          if (cur && isVisible(cur)) break;
+          const step = query(sel);
           if (step) {
             (step as HTMLElement).click();
-            await delay(350);
+            await delay(320);
             if (cancelled) return;
           }
         }
@@ -320,7 +324,9 @@ export default function HtmlViewer({
 
       const xPercent = rect.width ? (ix / rect.width) * 100 : 0;
       const yPercent = rect.height ? (iy / rect.height) * 100 : 0;
-      const openerSelector = lastClickRef.current;
+      const openerSelector = clickTrailRef.current.length
+        ? JSON.stringify(clickTrailRef.current)
+        : null;
 
       // 낙관적: 즉시 핀을 표시하고 저장은 백그라운드에서 처리(서버 왕복 대기 제거)
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -396,7 +402,12 @@ export default function HtmlViewer({
         (e) => {
           const target = e.target as Element | null;
           if (target && target.nodeType === 1) {
-            lastClickRef.current = cssPath(target, doc);
+            const sel = cssPath(target, doc);
+            if (sel) {
+              const t = clickTrailRef.current;
+              if (t[t.length - 1] !== sel) t.push(sel);
+              if (t.length > 6) t.shift();
+            }
           }
         },
         true
