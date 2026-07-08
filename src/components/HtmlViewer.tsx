@@ -3,9 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Pin } from "@/lib/types";
 
-// HTML을 항상 이 고정 폭으로 렌더링한 뒤 화면에 맞춰 축소한다(리플로우 방지).
-const DESIGN_WIDTH = 1440;
-
 interface HtmlViewerProps {
   projectId: string;
   fileId: string;
@@ -106,10 +103,7 @@ export default function HtmlViewer({
   // iframe 안에서 마지막으로 클릭한 요소(모달/탭 트리거 추정)
   const lastClickRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [size, setSize] = useState({ w: DESIGN_WIDTH, h: 900 });
-
-  const scale = size.w / DESIGN_WIDTH;
-  const iframeH = size.h / scale; // 축소 후 컨테이너 높이를 꽉 채우도록
+  const [size, setSize] = useState({ w: 1000, h: 700 });
 
   // 최신 값을 rAF 루프에서 읽기 위한 ref 미러
   const pinsRef = useRef<Pin[]>(pins);
@@ -124,7 +118,7 @@ export default function HtmlViewer({
     const el = containerRef.current;
     if (!el) return;
     const update = () =>
-      setSize({ w: el.clientWidth || DESIGN_WIDTH, h: el.clientHeight || 900 });
+      setSize({ w: el.clientWidth || 1000, h: el.clientHeight || 700 });
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -137,7 +131,6 @@ export default function HtmlViewer({
     const tick = () => {
       const doc = iframeRef.current?.contentDocument;
       const { w: cw, h: ch } = sizeRef.current;
-      const s = cw / DESIGN_WIDTH;
       const view = iframeRef.current?.contentWindow;
       if (doc && view) {
         for (const pin of pinsRef.current) {
@@ -161,16 +154,14 @@ export default function HtmlViewer({
               (r.width === 0 && r.height === 0) ||
               cs.visibility === "hidden" ||
               cs.display === "none";
-            // 앵커 지점(iframe 좌표)
-            const ax = r.left + (pin.offsetX ?? 0.5) * r.width;
-            const ay = r.top + (pin.offsetY ?? 0.5) * r.height;
-            const x = ax * s;
-            const y = ay * s;
+            // 앵커 지점(iframe = 실제 뷰포트 좌표, 스케일 없음)
+            const x = r.left + (pin.offsetX ?? 0.5) * r.width;
+            const y = r.top + (pin.offsetY ?? 0.5) * r.height;
             const inView = x >= 0 && x <= cw && y >= 0 && y <= ch;
             // 가림 검사: 그 지점의 최상단 요소가 앵커 요소가 아니면(모달 등에 가려짐) 숨김
             let occluded = false;
             if (!hidden && inView) {
-              const topEl = doc.elementFromPoint(ax, ay);
+              const topEl = doc.elementFromPoint(x, y);
               occluded =
                 !topEl ||
                 !(topEl === el || el.contains(topEl) || topEl.contains(el));
@@ -308,9 +299,8 @@ export default function HtmlViewer({
       if (!isPlacingPin) return;
 
       const rect = e.currentTarget.getBoundingClientRect();
-      const s = rect.width / DESIGN_WIDTH;
-      const ix = (e.clientX - rect.left) / s; // iframe 좌표계
-      const iy = (e.clientY - rect.top) / s;
+      const ix = e.clientX - rect.left; // iframe 좌표계(스케일 없음)
+      const iy = e.clientY - rect.top;
 
       let selector: string | null = null;
       let offsetX = 0.5;
@@ -328,8 +318,8 @@ export default function HtmlViewer({
         }
       }
 
-      const xPercent = (ix / DESIGN_WIDTH) * 100;
-      const yPercent = (iy / (rect.height / s)) * 100;
+      const xPercent = rect.width ? (ix / rect.width) * 100 : 0;
+      const yPercent = rect.height ? (iy / rect.height) * 100 : 0;
       const openerSelector = lastClickRef.current;
 
       // 낙관적: 즉시 핀을 표시하고 저장은 백그라운드에서 처리(서버 왕복 대기 제거)
@@ -425,13 +415,7 @@ export default function HtmlViewer({
         sandbox="allow-scripts allow-same-origin"
         onLoad={handleLoad}
         title="HTML Preview"
-        style={{
-          width: DESIGN_WIDTH,
-          height: iframeH,
-          transform: `scale(${scale})`,
-          transformOrigin: "top left",
-          border: 0,
-        }}
+        className="w-full h-full border-0"
       />
 
       {/* 핀 오버레이: 컨테이너(뷰포트) 크기 고정 레이어. rAF가 위치를 갱신 */}
