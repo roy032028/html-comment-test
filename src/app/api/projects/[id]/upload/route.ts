@@ -22,13 +22,13 @@ export async function POST(
   }
 
   const formData = await request.formData();
-  const file = formData.get("file") as File | null;
+  const blob = formData.get("file") as File | null;
+  const filename = (formData.get("filename") as string | null) ?? blob?.name ?? "";
 
-  if (!file) {
+  if (!blob) {
     return NextResponse.json({ error: "파일이 없습니다" }, { status: 400 });
   }
 
-  const filename = file.name;
   const ext = path.extname(filename).toLowerCase();
 
   if (ext !== ".html" && ext !== ".htm") {
@@ -38,7 +38,8 @@ export async function POST(
     );
   }
 
-  const content = await file.text();
+  // 클라이언트가 gzip 압축한 바이트를 그대로 저장 (서빙 시 서버가 해제)
+  const content = Buffer.from(await blob.arrayBuffer());
 
   const fileId = nanoid(12);
   await db.insert(files).values({

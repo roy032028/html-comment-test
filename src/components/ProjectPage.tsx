@@ -8,6 +8,7 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const fetchProject = useCallback(async () => {
@@ -30,23 +31,58 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadError(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`/api/projects/${projectId}/upload`, {
-      method: "POST",
-      body: formData,
-    });
+    try {
+      // 업로드 전 브라우저에서 gzip 압축 (Vercel 함수 요청 4.5MB 한도 회피)
+      const gzStream = file.stream().pipeThrough(new CompressionStream("gzip"));
+      const gzBlob = await new Response(gzStream).blob();
 
-    if (res.ok) await fetchProject();
-    setUploading(false);
-    e.target.value = "";
+      const formData = new FormData();
+      formData.append("filename", file.name);
+      formData.append("file", gzBlob, file.name);
+
+      const res = await fetch(`/api/projects/${projectId}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        await fetchProject();
+      } else if (res.status === 413) {
+        setUploadError(
+          "업로드 실패: 파일이 너무 큽니다 (압축 후에도 4.5MB 초과). 이미지가 많이 인라인된 HTML입니다."
+        );
+      } else {
+        let detail = `${res.status}`;
+        try {
+          const data = await res.json();
+          if (data?.error) detail = `${data.error} (${res.status})`;
+        } catch {}
+        setUploadError(`업로드 실패: ${detail}`);
+      }
+    } catch (err) {
+      setUploadError(
+        `업로드 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`
+      );
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
   };
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(window.location.href);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDeleteFile = async (fileId: string) => {
+    if (!confirm("이 HTML과 달린 핀·댓글을 모두 삭제할까요?")) return;
+    const res = await fetch(`/api/projects/${projectId}/files/${fileId}`, {
+      method: "DELETE",
+    });
+    if (res.ok) await fetchProject();
   };
 
   if (loading) {
@@ -112,6 +148,11 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
 
       <main className="flex-1 p-6">
         <div className="max-w-5xl mx-auto">
+          {uploadError && (
+            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
+              {uploadError}
+            </div>
+          )}
           {project.files.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-24 bg-white rounded-xl border-2 border-dashed border-gray-200">
               <svg className="w-12 h-12 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -123,11 +164,15 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {project.files.map((file) => (
-                <a
+                <div
                   key={file.id}
-                  href={`/review/${projectId}/${file.id}`}
-                  className="group bg-white rounded-xl border border-gray-200 hover:border-blue-400 hover:shadow-md transition-all overflow-hidden"
+                  className="group relative bg-white rounded-xl border border-gray-200 hover:border-blue-400 hover:shadow-md transition-all overflow-hidden"
                 >
+                  <a
+                    href={`/review/${projectId}/${file.id}`}
+                    className="absolute inset-0 z-0"
+                    aria-label={file.filename}
+                  />
                   <div className="h-32 bg-gray-50 border-b border-gray-100 flex items-center justify-center">
                     <svg className="w-10 h-10 text-gray-300 group-hover:text-blue-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -141,7 +186,16 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
                       핀 {file.pinCount}개
                     </p>
                   </div>
-                </a>
+                  <button
+                    onClick={() => handleDeleteFile(file.id)}
+                    className="absolute top-2 right-2 z-10 bg-white/90 backdrop-blur text-gray-400 hover:text-red-500 border border-gray-200 rounded-lg p-1.5 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="HTML 삭제"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
               ))}
             </div>
           )}

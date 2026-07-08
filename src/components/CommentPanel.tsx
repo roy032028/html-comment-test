@@ -9,12 +9,19 @@ interface CommentPanelProps {
   authorName: string;
   onSelectPin: (pinId: string | null) => void;
   onCommentAdded: (pinId: string, comment: Pin["comments"][0]) => void;
+  onCommentDeleted: (pinId: string, commentId: string) => void;
   onClose: () => void;
 }
 
-function Message({ comment }: { comment: Pin["comments"][0] }) {
+function Message({
+  comment,
+  onDelete,
+}: {
+  comment: Pin["comments"][0];
+  onDelete: () => void;
+}) {
   return (
-    <div className="space-y-1">
+    <div className="group space-y-1">
       <div className="flex items-center gap-2">
         <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold flex-shrink-0">
           {comment.authorName[0]?.toUpperCase()}
@@ -30,6 +37,15 @@ function Message({ comment }: { comment: Pin["comments"][0] }) {
             minute: "2-digit",
           })}
         </span>
+        <button
+          onClick={onDelete}
+          className="ml-auto text-gray-300 hover:text-red-500 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+          title="댓글 삭제"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
       </div>
       <p className="text-sm text-gray-700 pl-8 whitespace-pre-wrap break-words">
         {comment.body}
@@ -44,10 +60,17 @@ export default function CommentPanel({
   authorName,
   onSelectPin,
   onCommentAdded,
+  onCommentDeleted,
   onClose,
 }: CommentPanelProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  const handleDelete = async (pinId: string, commentId: string) => {
+    if (!confirm("이 댓글을 삭제할까요?")) return;
+    const res = await fetch(`/api/comments/${commentId}`, { method: "DELETE" });
+    if (res.ok) onCommentDeleted(pinId, commentId);
+  };
 
   const handleSubmit = async (e: React.FormEvent, pinId: string) => {
     e.preventDefault();
@@ -141,11 +164,18 @@ export default function CommentPanel({
                   <div className="px-3 pb-3 border-t border-blue-100 pt-3 space-y-3">
                     {rootComment ? (
                       <>
-                        <Message comment={rootComment} />
+                        <Message
+                          comment={rootComment}
+                          onDelete={() => handleDelete(pin.id, rootComment.id)}
+                        />
                         {replies.length > 0 && (
                           <div className="pl-4 border-l-2 border-gray-100 space-y-3">
                             {replies.map((reply) => (
-                              <Message key={reply.id} comment={reply} />
+                              <Message
+                                key={reply.id}
+                                comment={reply}
+                                onDelete={() => handleDelete(pin.id, reply.id)}
+                              />
                             ))}
                           </div>
                         )}

@@ -86,6 +86,16 @@ export default function ReviewPage({
     );
   };
 
+  const handleCommentDeleted = (pinId: string, commentId: string) => {
+    setPins((prev) =>
+      prev.map((p) =>
+        p.id === pinId
+          ? { ...p, comments: p.comments.filter((c) => c.id !== commentId) }
+          : p
+      )
+    );
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -147,6 +157,7 @@ export default function ReviewPage({
               authorName={authorName || "익명"}
               onSelectPin={handleSelectPin}
               onCommentAdded={handleCommentAdded}
+              onCommentDeleted={handleCommentDeleted}
               onClose={() => setIsPanelOpen(false)}
             />
           </div>

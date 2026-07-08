@@ -1,4 +1,4 @@
-import { sqliteTable, text, real, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, real, integer, blob } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -14,7 +14,8 @@ export const files = sqliteTable("files", {
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
   filename: text("filename").notNull(),
-  content: text("content").notNull(),
+  // gzip으로 압축된 HTML 바이트 (업로드 요청 크기 축소). 서빙 시 서버가 해제.
+  content: blob("content", { mode: "buffer" }).notNull(),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),
