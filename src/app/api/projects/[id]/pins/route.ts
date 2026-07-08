@@ -20,6 +20,7 @@ export async function POST(
     offsetX,
     offsetY,
     anchorText,
+    openerSelector,
   } = body;
 
   if (
@@ -51,6 +52,8 @@ export async function POST(
     offsetX: typeof offsetX === "number" ? offsetX : null,
     offsetY: typeof offsetY === "number" ? offsetY : null,
     anchorText: typeof anchorText === "string" ? anchorText : null,
+    openerSelector:
+      typeof openerSelector === "string" ? openerSelector : null,
     authorName: authorName.trim(),
   });
 
@@ -65,6 +68,7 @@ export async function POST(
     offsetX: pin!.offsetX,
     offsetY: pin!.offsetY,
     anchorText: pin!.anchorText,
+    openerSelector: pin!.openerSelector,
     authorName: pin!.authorName,
     createdAt: pin!.createdAt.toISOString(),
     comments: [],

@@ -78,7 +78,7 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
   };
 
   const handleDeleteFile = async (fileId: string) => {
-    if (!confirm("이 HTML과 달린 핀·댓글을 모두 삭제할까요?")) return;
+    if (!confirm("이 HTML과 달린 댓글을 모두 삭제할까요?")) return;
     const res = await fetch(`/api/projects/${projectId}/files/${fileId}`, {
       method: "DELETE",
     });
@@ -183,7 +183,7 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
                       {file.filename}
                     </p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      핀 {file.pinCount}개
+                      댓글 {file.pinCount}개
                     </p>
                   </div>
                   <button

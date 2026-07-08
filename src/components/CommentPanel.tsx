@@ -11,6 +11,7 @@ interface CommentPanelProps {
   onCommentAdded: (pinId: string, comment: Pin["comments"][0]) => void;
   onCommentEdited: (pinId: string, commentId: string, body: string) => void;
   onCommentDeleted: (pinId: string, commentId: string) => void;
+  onPinDeleted: (pinId: string) => void;
   onClose: () => void;
 }
 
@@ -122,6 +123,7 @@ export default function CommentPanel({
   onCommentAdded,
   onCommentEdited,
   onCommentDeleted,
+  onPinDeleted,
   onClose,
 }: CommentPanelProps) {
   const [body, setBody] = useState("");
@@ -162,9 +164,17 @@ export default function CommentPanel({
   };
 
   const handleDelete = async (pinId: string, commentId: string) => {
-    if (!confirm("이 댓글을 삭제할까요?")) return;
+    if (!confirm("이 답글을 삭제할까요?")) return;
     const res = await fetch(`/api/comments/${commentId}`, { method: "DELETE" });
     if (res.ok) onCommentDeleted(pinId, commentId);
+  };
+
+  // 루트 댓글 삭제 = 핀 삭제(답글 포함 전체 제거)
+  const handleDeletePin = async (pinId: string) => {
+    if (!confirm("이 댓글을 삭제하면 답글도 모두 사라집니다. 삭제할까요?"))
+      return;
+    const res = await fetch(`/api/pins/${pinId}`, { method: "DELETE" });
+    if (res.ok) onPinDeleted(pinId);
   };
 
   return (
@@ -186,8 +196,8 @@ export default function CommentPanel({
             <h3 className="font-semibold text-gray-900 text-sm">댓글</h3>
             <p className="text-xs text-gray-500 mt-0.5 truncate">
               {activePin
-                ? `${activePin.authorName}의 핀`
-                : `핀 ${pins.length}개`}
+                ? `${activePin.authorName}의 댓글`
+                : `댓글 ${pins.length}개`}
             </p>
           </div>
         </div>
@@ -206,7 +216,7 @@ export default function CommentPanel({
         <div className="flex-1 overflow-y-auto p-2">
           {pins.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-8">
-              아직 핀이 없습니다
+              아직 댓글이 없습니다
             </p>
           ) : (
             <ul className="space-y-1">
@@ -241,19 +251,34 @@ export default function CommentPanel({
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
             {activePin.comments.length === 0 ? (
               <p className="text-sm text-gray-400 text-center py-4">
-                아직 댓글이 없습니다
+                첫 댓글을 남겨보세요
               </p>
             ) : (
-              activePin.comments.map((comment) => (
+              <>
+                {/* 루트 댓글: 삭제 시 핀 전체 삭제 */}
                 <Message
-                  key={comment.id}
-                  comment={comment}
+                  comment={activePin.comments[0]}
                   onEdit={(newBody) =>
-                    handleEdit(activePin.id, comment.id, newBody)
+                    handleEdit(activePin.id, activePin.comments[0].id, newBody)
                   }
-                  onDelete={() => handleDelete(activePin.id, comment.id)}
+                  onDelete={() => handleDeletePin(activePin.id)}
                 />
-              ))
+                {/* 답글들 */}
+                {activePin.comments.length > 1 && (
+                  <div className="pl-4 border-l-2 border-gray-100 space-y-3">
+                    {activePin.comments.slice(1).map((reply) => (
+                      <Message
+                        key={reply.id}
+                        comment={reply}
+                        onEdit={(newBody) =>
+                          handleEdit(activePin.id, reply.id, newBody)
+                        }
+                        onDelete={() => handleDelete(activePin.id, reply.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -261,7 +286,11 @@ export default function CommentPanel({
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              placeholder="댓글을 입력하세요..."
+              placeholder={
+                activePin.comments.length > 0
+                  ? "답글을 입력하세요..."
+                  : "댓글을 입력하세요..."
+              }
               className="w-full text-sm text-gray-900 border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               rows={2}
             />
@@ -270,7 +299,11 @@ export default function CommentPanel({
               disabled={!body.trim() || submitting}
               className="mt-2 w-full bg-blue-500 text-white text-sm font-medium py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {submitting ? "등록 중..." : "댓글 등록"}
+              {submitting
+                ? "등록 중..."
+                : activePin.comments.length > 0
+                ? "답글 등록"
+                : "댓글 등록"}
             </button>
           </form>
         </>

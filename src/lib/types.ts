@@ -17,6 +17,8 @@ export interface Pin {
   offsetY: number | null;
   // 요소 식별용 텍스트 서명(탭 전환 등 선택자 충돌 방지)
   anchorText: string | null;
+  // 모달을 여는 트리거 요소(핀 직전 마지막 클릭). 요소가 사라지면 다시 눌러 재오픈
+  openerSelector: string | null;
   authorName: string;
   createdAt: string;
   comments: Comment[];

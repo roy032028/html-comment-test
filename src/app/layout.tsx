@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Filestage - HTML 리뷰 & 피드백",
-  description: "HTML 파일을 업로드하고 화면에 핀을 찍어 댓글을 남기며 팀과 공유하세요",
+  description: "HTML 파일을 업로드하고 화면에 댓글을 남기며 팀과 공유하세요",
 };
 
 export default function RootLayout({

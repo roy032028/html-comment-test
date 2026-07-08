@@ -13,6 +13,7 @@ interface HtmlViewerProps {
   authorName: string;
   activePinId: string | null;
   isPlacingPin: boolean;
+  pinsHidden: boolean;
   onPinPlaced: (pin: Pin) => void;
   onPinSelect: (pinId: string | null) => void;
 }
@@ -61,12 +62,17 @@ export default function HtmlViewer({
   authorName,
   activePinId,
   isPlacingPin,
+  pinsHidden,
   onPinPlaced,
   onPinSelect,
 }: HtmlViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const pinRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  // 모달 등으로 숨겨진 요소를 강제 표시했을 때 되돌리기 위한 복원 함수들
+  const revealRestoreRef = useRef<Array<() => void>>([]);
+  // iframe 안 최근 클릭 경로(탭 전환·모달 열기 등 상태 이동 재생용)
+  const clickTrailRef = useRef<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [size, setSize] = useState({ w: DESIGN_WIDTH, h: 900 });
 
@@ -76,8 +82,10 @@ export default function HtmlViewer({
   // 최신 값을 rAF 루프에서 읽기 위한 ref 미러
   const pinsRef = useRef<Pin[]>(pins);
   const sizeRef = useRef(size);
+  const pinsHiddenRef = useRef(pinsHidden);
   pinsRef.current = pins;
   sizeRef.current = size;
+  pinsHiddenRef.current = pinsHidden;
 
   // 컨테이너 크기 추적
   useEffect(() => {
@@ -103,6 +111,11 @@ export default function HtmlViewer({
         for (const pin of pinsRef.current) {
           const btn = pinRefs.current.get(pin.id);
           if (!btn) continue;
+
+          if (pinsHiddenRef.current) {
+            btn.style.display = "none";
+            continue;
+          }
 
           if (pin.selector) {
             let el: Element | null = null;
@@ -161,23 +174,117 @@ export default function HtmlViewer({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // 핀이 선택되면 그 요소가 보이도록 iframe을 스크롤
+  // 핀 선택 시: 숨겨진(모달 등) 요소를 강제 표시하고 그 위치로 스크롤
   useEffect(() => {
+    // 이전에 강제 표시했던 것 되돌리기
+    revealRestoreRef.current.forEach((restore) => restore());
+    revealRestoreRef.current = [];
+
     if (!activePinId) return;
-    const doc = iframeRef.current?.contentDocument;
-    if (!doc) return;
     const pin = pinsRef.current.find((p) => p.id === activePinId);
     if (!pin?.selector) return;
-    let el: Element | null = null;
-    try {
-      el = doc.querySelector(pin.selector);
-    } catch {
-      el = null;
-    }
-    if (el) {
+    const selector = pin.selector;
+
+    let cancelled = false;
+    const delay = (ms: number) =>
+      new Promise<void>((res) => window.setTimeout(res, ms));
+    const getDoc = () => iframeRef.current?.contentDocument ?? null;
+    const getView = () => iframeRef.current?.contentWindow ?? null;
+    const query = (sel: string): Element | null => {
+      const d = getDoc();
+      if (!d) return null;
+      try {
+        return d.querySelector(sel);
+      } catch {
+        return null;
+      }
+    };
+    const isVisible = (el: Element | null): boolean => {
+      const view = getView();
+      if (!el || !view) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return false;
+      const cs = view.getComputedStyle(el);
+      return cs.visibility !== "hidden" && cs.display !== "none";
+    };
+    const forceReveal = (el: Element) => {
+      const doc = getDoc();
+      const view = getView();
+      if (!doc || !view) return;
+      const restores: Array<() => void> = [];
+      let cur: HTMLElement | null = el as HTMLElement;
+      while (cur && cur !== doc.body && cur !== doc.documentElement) {
+        const cs = view.getComputedStyle(cur);
+        const node = cur;
+        if (cs.display === "none") {
+          const prev = node.style.display;
+          node.style.setProperty("display", "block", "important");
+          restores.push(() => {
+            node.style.display = prev;
+          });
+        }
+        if (cs.visibility === "hidden") {
+          const prev = node.style.visibility;
+          node.style.setProperty("visibility", "visible", "important");
+          restores.push(() => {
+            node.style.visibility = prev;
+          });
+        }
+        if (node.hasAttribute("hidden")) {
+          node.removeAttribute("hidden");
+          restores.push(() => node.setAttribute("hidden", ""));
+        }
+        if (node.getAttribute("aria-hidden") === "true") {
+          node.setAttribute("aria-hidden", "false");
+          restores.push(() => node.setAttribute("aria-hidden", "true"));
+        }
+        cur = cur.parentElement;
+      }
+      revealRestoreRef.current = restores;
+    };
+
+    (async () => {
+      // 아직 안 보이면 저장된 클릭 경로를 순서대로 재생(탭→모달 등), 보이면 중단
+      if (!isVisible(query(selector))) {
+        let trail: string[] = [];
+        if (pin.openerSelector) {
+          try {
+            const parsed = JSON.parse(pin.openerSelector);
+            trail = Array.isArray(parsed) ? parsed : [pin.openerSelector];
+          } catch {
+            trail = [pin.openerSelector];
+          }
+        }
+        for (const sel of trail) {
+          if (cancelled) return;
+          if (isVisible(query(selector))) break;
+          const step = query(sel);
+          if (step) {
+            (step as HTMLElement).click();
+            await delay(300);
+          }
+        }
+      }
+      if (cancelled) return;
+
+      const el = query(selector);
+      if (!el) return; // 끝내 못 찾음
+      if (!isVisible(el)) forceReveal(el); // DOM엔 있으나 CSS로 숨겨진 경우
       el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activePinId]);
+
+  // 언마운트 시 강제 표시 복원
+  useEffect(() => {
+    return () => {
+      revealRestoreRef.current.forEach((restore) => restore());
+      revealRestoreRef.current = [];
+    };
+  }, []);
 
   const handleOverlayClick = useCallback(
     async (e: React.MouseEvent<HTMLDivElement>) => {
@@ -219,6 +326,9 @@ export default function HtmlViewer({
           offsetX,
           offsetY,
           anchorText,
+          openerSelector: clickTrailRef.current.length
+            ? JSON.stringify(clickTrailRef.current)
+            : null,
         }),
       });
 
@@ -239,6 +349,29 @@ export default function HtmlViewer({
     [activePinId, onPinSelect]
   );
 
+  const handleLoad = useCallback(() => {
+    setLoading(false);
+    // iframe 내부 클릭을 기록해 모달 트리거를 추정 (캡처 단계)
+    const doc = iframeRef.current?.contentDocument;
+    if (doc) {
+      doc.addEventListener(
+        "click",
+        (e) => {
+          const target = e.target as Element | null;
+          if (target && target.nodeType === 1) {
+            const sel = cssPath(target, doc);
+            if (sel) {
+              const trail = clickTrailRef.current;
+              if (trail[trail.length - 1] !== sel) trail.push(sel);
+              if (trail.length > 5) trail.shift();
+            }
+          }
+        },
+        true
+      );
+    }
+  }, []);
+
   return (
     <div
       ref={containerRef}
@@ -248,7 +381,7 @@ export default function HtmlViewer({
         ref={iframeRef}
         src={`/api/projects/${projectId}/files/${fileId}`}
         sandbox="allow-scripts allow-same-origin"
-        onLoad={() => setLoading(false)}
+        onLoad={handleLoad}
         title="HTML Preview"
         style={{
           width: DESIGN_WIDTH,
@@ -280,7 +413,7 @@ export default function HtmlViewer({
             }`}
             style={{ left: 0, top: 0, display: "none" }}
             onClick={(e) => handlePinClick(e, pin.id)}
-            title={`${pin.authorName}의 핀`}
+            title={`${pin.authorName}의 댓글`}
           >
             {pin.authorName[0]?.toUpperCase() ?? "?"}
           </button>
@@ -295,7 +428,7 @@ export default function HtmlViewer({
 
       {isPlacingPin && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-30 bg-orange-500 text-white px-4 py-1.5 rounded-full text-sm font-medium shadow-lg pointer-events-none">
-          요소를 클릭하여 핀을 추가하세요
+          요소를 클릭하여 댓글을 남기세요
         </div>
       )}
     </div>

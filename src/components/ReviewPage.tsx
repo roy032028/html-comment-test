@@ -24,6 +24,7 @@ export default function ReviewPage({
   const [activePinId, setActivePinId] = useState<string | null>(null);
   const [isPlacingPin, setIsPlacingPin] = useState(false);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [pinsHidden, setPinsHidden] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(AUTHOR_NAME_KEY);
@@ -66,20 +67,43 @@ export default function ReviewPage({
   const listHref =
     projectId === DEFAULT_PROJECT_ID ? "/" : `/review/${projectId}`;
 
+  // 댓글이 하나도 없는 핀(빈 핀)은 그 핀에서 벗어날 때 삭제
+  const discardIfEmpty = (pinId: string | null) => {
+    if (!pinId) return;
+    const p = pins.find((x) => x.id === pinId);
+    if (p && p.comments.length === 0) {
+      setPins((prev) => prev.filter((x) => x.id !== pinId));
+      fetch(`/api/pins/${pinId}`, { method: "DELETE" });
+    }
+  };
+
   const handleSelectPin = (pinId: string | null) => {
+    if (activePinId && activePinId !== pinId) discardIfEmpty(activePinId);
     setActivePinId(pinId);
     if (pinId) setIsPanelOpen(true);
   };
 
   const handleTogglePanel = () => {
-    if (!isPanelOpen) {
-      if (!activePinId && pins.length > 0) {
-        setActivePinId(pins[0].id);
-      }
-      setIsPanelOpen(true);
-    } else {
+    if (isPanelOpen) {
+      discardIfEmpty(activePinId);
+      setActivePinId(null);
       setIsPanelOpen(false);
+    } else {
+      // "댓글" 버튼은 항상 목록부터 표시
+      setActivePinId(null);
+      setIsPanelOpen(true);
     }
+  };
+
+  const handleClosePanel = () => {
+    discardIfEmpty(activePinId);
+    setActivePinId(null);
+    setIsPanelOpen(false);
+  };
+
+  const handlePinDeleted = (pinId: string) => {
+    setPins((prev) => prev.filter((p) => p.id !== pinId));
+    setActivePinId(null);
   };
 
   const handlePinPlaced = (pin: Pin) => {
@@ -159,12 +183,14 @@ export default function ReviewPage({
         pinCount={pins.length}
         isPanelOpen={isPanelOpen}
         onTogglePanel={handleTogglePanel}
+        pinsHidden={pinsHidden}
+        onTogglePinsHidden={() => setPinsHidden((v) => !v)}
       />
 
       <main className="flex-1 min-h-0 relative">
         {!authorName && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm px-4 py-2 rounded-lg shadow-sm">
-            상단에서 이름을 입력하면 핀과 댓글을 남길 수 있습니다.
+            상단에서 이름을 입력하면 댓글을 남길 수 있습니다.
           </div>
         )}
 
@@ -175,6 +201,7 @@ export default function ReviewPage({
           authorName={authorName || "익명"}
           activePinId={activePinId}
           isPlacingPin={isPlacingPin}
+          pinsHidden={pinsHidden && !isPlacingPin}
           onPinPlaced={handlePinPlaced}
           onPinSelect={handleSelectPin}
         />
@@ -189,7 +216,8 @@ export default function ReviewPage({
               onCommentAdded={handleCommentAdded}
               onCommentEdited={handleCommentEdited}
               onCommentDeleted={handleCommentDeleted}
-              onClose={() => setIsPanelOpen(false)}
+              onPinDeleted={handlePinDeleted}
+              onClose={handleClosePanel}
             />
           </div>
         )}
