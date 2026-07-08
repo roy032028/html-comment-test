@@ -70,17 +70,16 @@ function findAnchoredEl(doc: Document, pin: Pin): Element | null {
   return cands.find((el) => elText(el) === pin.anchorText) ?? null;
 }
 
-// 저장된 클릭 경로(탭/모달 트리거). 최신→과거 순으로 반환해 가장 최근 트리거부터 시도
+// 저장된 클릭 경로(탭/모달 등). 저장 순서(처음→끝) 그대로 반환 — 새로고침 후 순서대로 재생
 function openerTrail(pin: Pin): string[] {
   if (!pin.openerSelector) return [];
-  let trail: string[] = [];
   try {
     const parsed = JSON.parse(pin.openerSelector);
-    trail = Array.isArray(parsed) ? parsed : [pin.openerSelector];
+    if (Array.isArray(parsed)) return parsed;
   } catch {
-    trail = [pin.openerSelector];
+    /* 일반 문자열 */
   }
-  return [...trail].reverse();
+  return [pin.openerSelector];
 }
 
 export default function HtmlViewer({
@@ -281,38 +280,72 @@ export default function HtmlViewer({
       });
     };
 
-    (async () => {
-      if (pin.selector) {
-        // 올바른(텍스트 일치) 요소가 안 보이면, 클릭 경로를 최신→과거 순으로 재생
-        let el = findTarget();
-        if (!el || !isVisible(el)) {
-          for (const sel of openerTrail(pin)) {
-            if (cancelled) return;
-            const cur = findTarget();
-            if (cur && isVisible(cur)) break;
-            const step = query(sel);
-            if (step) {
-              (step as HTMLElement).click();
-              await delay(320);
-              if (cancelled) return;
-            }
-          }
+    const reloadIframe = () =>
+      new Promise<void>((resolve) => {
+        const ifr = iframeRef.current;
+        if (!ifr) return resolve();
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          ifr.removeEventListener("load", finish);
+          resolve();
+        };
+        ifr.addEventListener("load", finish);
+        try {
+          ifr.contentWindow?.location.reload();
+        } catch {
+          ifr.src = ifr.src;
         }
+        window.setTimeout(finish, 5000);
+      });
 
-        // 정확한 요소 → 없으면 텍스트 무시 첫 요소라도
-        el = findTarget() || query(pin.selector);
-        if (el) {
-          if (!isVisible(el)) forceReveal(el);
-          el.scrollIntoView({
-            behavior: "smooth",
-            block: "center",
-            inline: "center",
-          });
-          return;
+    const waitReady = async () => {
+      for (let i = 0; i < 30; i++) {
+        const d = getDoc();
+        if (d && d.body && d.readyState !== "loading") return;
+        await delay(100);
+      }
+    };
+
+    (async () => {
+      // 1) 현재 상태에 정확한 요소가 보이면 스크롤만(가장 빠름)
+      let el = findTarget();
+      if (el && isVisible(el)) {
+        el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        return;
+      }
+
+      // 2) 안 보이면 iframe을 새로고침해 깨끗한 상태에서 경로를 처음→끝 순서로 재생(결정적 복원)
+      const trail = pin.selector ? openerTrail(pin) : [];
+      if (trail.length) {
+        await reloadIframe();
+        if (cancelled) return;
+        await waitReady();
+        if (cancelled) return;
+        await delay(250); // 앱 초기 렌더 여유
+        for (const sel of trail) {
+          if (cancelled) return;
+          const cur = findTarget();
+          if (cur && isVisible(cur)) break;
+          const step = query(sel);
+          if (step) {
+            (step as HTMLElement).click();
+            await delay(350);
+            if (cancelled) return;
+          }
         }
       }
 
-      // 끝내 요소를 못 찾으면(또는 좌표 핀) 저장된 좌표로 대략 이동 — 무조건 화면 전환
+      // 3) 정확한 요소 → 없으면 텍스트 무시 첫 요소라도 → 스크롤
+      el = findTarget() || (pin.selector ? query(pin.selector) : null);
+      if (el) {
+        if (!isVisible(el)) forceReveal(el);
+        el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        return;
+      }
+
+      // 4) 끝내 못 찾으면 저장된 좌표로 대략 이동 — 무조건 화면 전환
       scrollToCoord();
     })();
 
