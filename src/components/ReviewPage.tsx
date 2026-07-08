@@ -107,10 +107,19 @@ export default function ReviewPage({
   };
 
   const handlePinPlaced = (pin: Pin) => {
+    // 낙관적 추가: 즉시 표시
     setPins((prev) => [...prev, pin]);
     setIsPlacingPin(false);
-    // 핀 추가 시 전체를 다시 불러와 최신 상태(다른 사람 핀 포함)로 동기화
-    fetchPins();
+  };
+
+  const handlePinConfirmed = (tempId: string, pin: Pin) => {
+    setPins((prev) => prev.map((p) => (p.id === tempId ? pin : p)));
+    setActivePinId((cur) => (cur === tempId ? pin.id : cur));
+  };
+
+  const handlePinFailed = (tempId: string) => {
+    setPins((prev) => prev.filter((p) => p.id !== tempId));
+    setActivePinId((cur) => (cur === tempId ? null : cur));
   };
 
   const handleCommentAdded = (pinId: string, comment: Pin["comments"][0]) => {
@@ -203,6 +212,8 @@ export default function ReviewPage({
           isPlacingPin={isPlacingPin}
           pinsHidden={pinsHidden && !isPlacingPin}
           onPinPlaced={handlePinPlaced}
+          onPinConfirmed={handlePinConfirmed}
+          onPinFailed={handlePinFailed}
           onPinSelect={handleSelectPin}
         />
 

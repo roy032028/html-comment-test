@@ -15,6 +15,8 @@ interface HtmlViewerProps {
   isPlacingPin: boolean;
   pinsHidden: boolean;
   onPinPlaced: (pin: Pin) => void;
+  onPinConfirmed: (tempId: string, pin: Pin) => void;
+  onPinFailed: (tempId: string) => void;
   onPinSelect: (pinId: string | null) => void;
 }
 
@@ -92,6 +94,8 @@ export default function HtmlViewer({
   isPlacingPin,
   pinsHidden,
   onPinPlaced,
+  onPinConfirmed,
+  onPinFailed,
   onPinSelect,
 }: HtmlViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -326,30 +330,62 @@ export default function HtmlViewer({
 
       const xPercent = (ix / DESIGN_WIDTH) * 100;
       const yPercent = (iy / (rect.height / s)) * 100;
+      const openerSelector = lastClickRef.current;
 
-      const res = await fetch(`/api/projects/${projectId}/pins`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          xPercent,
-          yPercent,
-          authorName,
-          fileId,
-          selector,
-          offsetX,
-          offsetY,
-          anchorText,
-          openerSelector: lastClickRef.current,
-        }),
-      });
+      // 낙관적: 즉시 핀을 표시하고 저장은 백그라운드에서 처리(서버 왕복 대기 제거)
+      const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimistic: Pin = {
+        id: tempId,
+        fileId,
+        xPercent,
+        yPercent,
+        selector,
+        offsetX,
+        offsetY,
+        anchorText,
+        openerSelector,
+        authorName,
+        createdAt: new Date().toISOString(),
+        comments: [],
+      };
+      onPinPlaced(optimistic);
+      onPinSelect(tempId);
 
-      if (res.ok) {
-        const pin = await res.json();
-        onPinPlaced(pin);
-        onPinSelect(pin.id);
+      try {
+        const res = await fetch(`/api/projects/${projectId}/pins`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            xPercent,
+            yPercent,
+            authorName,
+            fileId,
+            selector,
+            offsetX,
+            offsetY,
+            anchorText,
+            openerSelector,
+          }),
+        });
+        if (res.ok) {
+          onPinConfirmed(tempId, await res.json());
+        } else {
+          onPinFailed(tempId);
+        }
+      } catch {
+        onPinFailed(tempId);
       }
     },
-    [isPlacingPin, projectId, fileId, authorName, onPinPlaced, onPinSelect]
+    [
+      isPlacingPin,
+      projectId,
+      fileId,
+      authorName,
+      onPinPlaced,
+      onPinConfirmed,
+      onPinFailed,
+      onPinSelect,
+    ]
   );
 
   const handlePinClick = useCallback(
