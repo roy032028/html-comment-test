@@ -11,6 +11,10 @@ export interface Pin {
   fileId: string;
   xPercent: number;
   yPercent: number;
+  // 요소 기반 앵커: 클릭한 DOM 요소의 선택자 + 요소 내 상대 위치(0~1)
+  selector: string | null;
+  offsetX: number | null;
+  offsetY: number | null;
   authorName: string;
   createdAt: string;
   comments: Comment[];

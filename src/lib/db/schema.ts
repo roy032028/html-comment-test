@@ -28,6 +28,9 @@ export const pins = sqliteTable("pins", {
     .references(() => files.id, { onDelete: "cascade" }),
   xPercent: real("x_percent").notNull(),
   yPercent: real("y_percent").notNull(),
+  selector: text("selector"),
+  offsetX: real("offset_x"),
+  offsetY: real("offset_y"),
   authorName: text("author_name").notNull(),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()

@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Pin } from "@/lib/types";
 
-// HTML을 항상 이 고정 폭으로 렌더링한 뒤 화면에 맞춰 축소/확대한다.
-// 폭이 고정이라 내부 레이아웃이 리플로우되지 않아 핀이 항상 같은 위치에 붙는다.
+// HTML을 항상 이 고정 폭으로 렌더링한 뒤 화면에 맞춰 축소한다(리플로우 방지).
 const DESIGN_WIDTH = 1440;
 
 interface HtmlViewerProps {
@@ -16,6 +15,38 @@ interface HtmlViewerProps {
   isPlacingPin: boolean;
   onPinPlaced: (pin: Pin) => void;
   onPinSelect: (pinId: string | null) => void;
+}
+
+// 클릭한 요소의 CSS 경로 생성 (id가 있으면 그걸 기준으로)
+function cssPath(el: Element | null, doc: Document): string | null {
+  if (!el || el.nodeType !== 1) return null;
+  const esc = (s: string) =>
+    typeof CSS !== "undefined" && CSS.escape ? CSS.escape(s) : s;
+  if (el === doc.body) return "body";
+  const parts: string[] = [];
+  let cur: Element | null = el;
+  while (cur && cur.nodeType === 1 && cur !== doc.documentElement) {
+    if (cur.id) {
+      parts.unshift(`#${esc(cur.id)}`);
+      break;
+    }
+    const tag = cur.tagName.toLowerCase();
+    const parent: Element | null = cur.parentElement;
+    if (!parent) {
+      parts.unshift(tag);
+      break;
+    }
+    const sameTag = Array.from(parent.children).filter(
+      (c) => c.tagName === cur!.tagName
+    );
+    parts.unshift(
+      sameTag.length > 1
+        ? `${tag}:nth-of-type(${sameTag.indexOf(cur) + 1})`
+        : tag
+    );
+    cur = parent;
+  }
+  return parts.join(" > ");
 }
 
 export default function HtmlViewer({
@@ -30,57 +61,123 @@ export default function HtmlViewer({
 }: HtmlViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const pinRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [containerWidth, setContainerWidth] = useState(DESIGN_WIDTH);
-  const [contentHeight, setContentHeight] = useState(900);
+  const [size, setSize] = useState({ w: DESIGN_WIDTH, h: 900 });
 
-  const scale = containerWidth / DESIGN_WIDTH;
+  const scale = size.w / DESIGN_WIDTH;
+  const iframeH = size.h / scale; // 축소 후 컨테이너 높이를 꽉 채우도록
 
-  // 컨테이너 폭 변화를 추적해 스케일을 갱신한다.
+  // 최신 값을 rAF 루프에서 읽기 위한 ref 미러
+  const pinsRef = useRef<Pin[]>(pins);
+  const sizeRef = useRef(size);
+  pinsRef.current = pins;
+  sizeRef.current = size;
+
+  // 컨테이너 크기 추적
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const update = () => setContainerWidth(el.clientWidth);
+    const update = () =>
+      setSize({ w: el.clientWidth || DESIGN_WIDTH, h: el.clientHeight || 900 });
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const measureHeight = useCallback(() => {
-    try {
+  // 매 프레임 각 핀이 붙은 요소의 현재 위치로 핀을 이동/표시/숨김
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
       const doc = iframeRef.current?.contentDocument;
-      if (doc) {
-        const h = Math.max(
-          doc.documentElement?.scrollHeight ?? 0,
-          doc.body?.scrollHeight ?? 0
-        );
-        if (h > 0) setContentHeight(h);
-      }
-    } catch {
-      // 크로스오리진 등으로 측정 실패 시 기본값 유지
-    }
-  }, []);
+      const { w: cw, h: ch } = sizeRef.current;
+      const s = cw / DESIGN_WIDTH;
+      const view = iframeRef.current?.contentWindow;
+      if (doc && view) {
+        for (const pin of pinsRef.current) {
+          const btn = pinRefs.current.get(pin.id);
+          if (!btn) continue;
 
-  const handleLoad = () => {
-    setLoading(false);
-    measureHeight();
-    // 이미지·폰트 로딩 후 높이가 바뀔 수 있어 한 번 더 측정
-    setTimeout(measureHeight, 400);
-  };
+          if (pin.selector) {
+            let el: Element | null = null;
+            try {
+              el = doc.querySelector(pin.selector);
+            } catch {
+              el = null;
+            }
+            if (!el) {
+              btn.style.display = "none";
+              continue;
+            }
+            const r = el.getBoundingClientRect();
+            const cs = view.getComputedStyle(el);
+            const hidden =
+              (r.width === 0 && r.height === 0) ||
+              cs.visibility === "hidden" ||
+              cs.display === "none";
+            const x = (r.left + (pin.offsetX ?? 0.5) * r.width) * s;
+            const y = (r.top + (pin.offsetY ?? 0.5) * r.height) * s;
+            const inView = x >= 0 && x <= cw && y >= 0 && y <= ch;
+            if (hidden || !inView) {
+              btn.style.display = "none";
+            } else {
+              btn.style.display = "flex";
+              btn.style.left = `${x}px`;
+              btn.style.top = `${y}px`;
+            }
+          } else {
+            // 레거시(좌표) 핀: 뷰포트 대비 %로 표시
+            btn.style.display = "flex";
+            btn.style.left = `${(pin.xPercent / 100) * cw}px`;
+            btn.style.top = `${(pin.yPercent / 100) * ch}px`;
+          }
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const handleOverlayClick = useCallback(
     async (e: React.MouseEvent<HTMLDivElement>) => {
       if (!isPlacingPin) return;
 
       const rect = e.currentTarget.getBoundingClientRect();
-      const xPercent = ((e.clientX - rect.left) / rect.width) * 100;
-      const yPercent = ((e.clientY - rect.top) / rect.height) * 100;
+      const s = rect.width / DESIGN_WIDTH;
+      const ix = (e.clientX - rect.left) / s; // iframe 좌표계
+      const iy = (e.clientY - rect.top) / s;
+
+      let selector: string | null = null;
+      let offsetX = 0.5;
+      let offsetY = 0.5;
+      const doc = iframeRef.current?.contentDocument;
+      if (doc) {
+        const el = doc.elementFromPoint(ix, iy);
+        if (el) {
+          selector = cssPath(el, doc);
+          const r = el.getBoundingClientRect();
+          if (r.width > 0) offsetX = (ix - r.left) / r.width;
+          if (r.height > 0) offsetY = (iy - r.top) / r.height;
+        }
+      }
+
+      const xPercent = (ix / DESIGN_WIDTH) * 100;
+      const yPercent = (iy / (rect.height / s)) * 100;
 
       const res = await fetch(`/api/projects/${projectId}/pins`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ xPercent, yPercent, authorName, fileId }),
+        body: JSON.stringify({
+          xPercent,
+          yPercent,
+          authorName,
+          fileId,
+          selector,
+          offsetX,
+          offsetY,
+        }),
       });
 
       if (res.ok) {
@@ -100,60 +197,52 @@ export default function HtmlViewer({
     [activePinId, onPinSelect]
   );
 
-  const dispW = containerWidth;
-  const dispH = contentHeight * scale;
-
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full bg-white overflow-x-hidden overflow-y-auto"
+      className="relative w-full h-full bg-white overflow-hidden"
     >
-      {/* 화면에 표시되는(축소된) 프레임 크기의 래퍼 */}
-      <div className="relative" style={{ width: dispW, height: dispH }}>
-        <iframe
-          ref={iframeRef}
-          src={`/api/projects/${projectId}/files/${fileId}`}
-          sandbox="allow-scripts allow-same-origin"
-          onLoad={handleLoad}
-          title="HTML Preview"
-          style={{
-            width: DESIGN_WIDTH,
-            height: contentHeight,
-            transform: `scale(${scale})`,
-            transformOrigin: "top left",
-            position: "absolute",
-            top: 0,
-            left: 0,
-            border: 0,
-          }}
-        />
+      <iframe
+        ref={iframeRef}
+        src={`/api/projects/${projectId}/files/${fileId}`}
+        sandbox="allow-scripts allow-same-origin"
+        onLoad={() => setLoading(false)}
+        title="HTML Preview"
+        style={{
+          width: DESIGN_WIDTH,
+          height: iframeH,
+          transform: `scale(${scale})`,
+          transformOrigin: "top left",
+          border: 0,
+        }}
+      />
 
-        {/* 핀 오버레이: 축소 프레임과 같은 크기라 %좌표가 콘텐츠에 정확히 대응 */}
-        <div
-          className={`absolute inset-0 ${
-            isPlacingPin ? "cursor-crosshair" : "pointer-events-none"
-          }`}
-          onClick={handleOverlayClick}
-        >
-          {pins.map((pin, index) => (
-            <button
-              key={pin.id}
-              className={`pointer-events-auto absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-md transition-transform hover:scale-110 ${
-                activePinId === pin.id
-                  ? "bg-orange-500 ring-2 ring-orange-300 scale-110 z-20"
-                  : "bg-blue-500 hover:bg-blue-600 z-10"
-              }`}
-              style={{
-                left: `${pin.xPercent}%`,
-                top: `${pin.yPercent}%`,
-              }}
-              onClick={(e) => handlePinClick(e, pin.id)}
-              title={`${pin.authorName}의 핀`}
-            >
-              {index + 1}
-            </button>
-          ))}
-        </div>
+      {/* 핀 오버레이: 컨테이너(뷰포트) 크기 고정 레이어. rAF가 위치를 갱신 */}
+      <div
+        className={`absolute inset-0 ${
+          isPlacingPin ? "cursor-crosshair" : "pointer-events-none"
+        }`}
+        onClick={handleOverlayClick}
+      >
+        {pins.map((pin, index) => (
+          <button
+            key={pin.id}
+            ref={(node) => {
+              if (node) pinRefs.current.set(pin.id, node);
+              else pinRefs.current.delete(pin.id);
+            }}
+            className={`pointer-events-auto absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-md transition-transform hover:scale-110 ${
+              activePinId === pin.id
+                ? "bg-orange-500 ring-2 ring-orange-300 scale-110 z-20"
+                : "bg-blue-500 hover:bg-blue-600 z-10"
+            }`}
+            style={{ left: 0, top: 0, display: "none" }}
+            onClick={(e) => handlePinClick(e, pin.id)}
+            title={`${pin.authorName}의 핀`}
+          >
+            {index + 1}
+          </button>
+        ))}
       </div>
 
       {loading && (
@@ -164,7 +253,7 @@ export default function HtmlViewer({
 
       {isPlacingPin && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-30 bg-orange-500 text-white px-4 py-1.5 rounded-full text-sm font-medium shadow-lg pointer-events-none">
-          화면을 클릭하여 핀을 추가하세요
+          요소를 클릭하여 핀을 추가하세요
         </div>
       )}
     </div>

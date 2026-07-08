@@ -36,6 +36,9 @@ await client.executeMultiple(`
     file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     x_percent REAL NOT NULL,
     y_percent REAL NOT NULL,
+    selector TEXT,
+    offset_x REAL,
+    offset_y REAL,
     author_name TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
@@ -47,5 +50,18 @@ await client.executeMultiple(`
     created_at INTEGER NOT NULL
   );
 `);
+
+// 기존 DB(이미 pins 테이블이 있는 경우)에 앵커 컬럼 추가 — 이미 있으면 무시
+for (const stmt of [
+  "ALTER TABLE pins ADD COLUMN selector TEXT",
+  "ALTER TABLE pins ADD COLUMN offset_x REAL",
+  "ALTER TABLE pins ADD COLUMN offset_y REAL",
+]) {
+  try {
+    await client.execute(stmt);
+  } catch {
+    // 컬럼이 이미 존재하면 발생하는 오류는 무시
+  }
+}
 
 export const db = drizzle(client, { schema });

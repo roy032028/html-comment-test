@@ -41,6 +41,9 @@ export async function GET(
         fileId: pin.fileId,
         xPercent: pin.xPercent,
         yPercent: pin.yPercent,
+        selector: pin.selector,
+        offsetX: pin.offsetX,
+        offsetY: pin.offsetY,
         authorName: pin.authorName,
         createdAt: pin.createdAt.toISOString(),
         comments: commentRows.map(
