@@ -97,6 +97,25 @@ export default function ReviewPage({
     );
   };
 
+  const handleCommentEdited = (
+    pinId: string,
+    commentId: string,
+    body: string
+  ) => {
+    setPins((prev) =>
+      prev.map((p) =>
+        p.id === pinId
+          ? {
+              ...p,
+              comments: p.comments.map((c) =>
+                c.id === commentId ? { ...c, body } : c
+              ),
+            }
+          : p
+      )
+    );
+  };
+
   const handleCommentDeleted = (pinId: string, commentId: string) => {
     setPins((prev) =>
       prev.map((p) =>
@@ -168,6 +187,7 @@ export default function ReviewPage({
               authorName={authorName || "익명"}
               onSelectPin={handleSelectPin}
               onCommentAdded={handleCommentAdded}
+              onCommentEdited={handleCommentEdited}
               onCommentDeleted={handleCommentDeleted}
               onClose={() => setIsPanelOpen(false)}
             />

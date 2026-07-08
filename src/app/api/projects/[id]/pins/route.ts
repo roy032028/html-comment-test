@@ -11,8 +11,16 @@ export async function POST(
   const { id: projectId } = await params;
   const body = await request.json();
 
-  const { xPercent, yPercent, authorName, fileId, selector, offsetX, offsetY } =
-    body;
+  const {
+    xPercent,
+    yPercent,
+    authorName,
+    fileId,
+    selector,
+    offsetX,
+    offsetY,
+    anchorText,
+  } = body;
 
   if (
     typeof xPercent !== "number" ||
@@ -42,6 +50,7 @@ export async function POST(
     selector: typeof selector === "string" ? selector : null,
     offsetX: typeof offsetX === "number" ? offsetX : null,
     offsetY: typeof offsetY === "number" ? offsetY : null,
+    anchorText: typeof anchorText === "string" ? anchorText : null,
     authorName: authorName.trim(),
   });
 
@@ -55,6 +64,7 @@ export async function POST(
     selector: pin!.selector,
     offsetX: pin!.offsetX,
     offsetY: pin!.offsetY,
+    anchorText: pin!.anchorText,
     authorName: pin!.authorName,
     createdAt: pin!.createdAt.toISOString(),
     comments: [],

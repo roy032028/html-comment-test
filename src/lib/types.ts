@@ -15,6 +15,8 @@ export interface Pin {
   selector: string | null;
   offsetX: number | null;
   offsetY: number | null;
+  // 요소 식별용 텍스트 서명(탭 전환 등 선택자 충돌 방지)
+  anchorText: string | null;
   authorName: string;
   createdAt: string;
   comments: Comment[];

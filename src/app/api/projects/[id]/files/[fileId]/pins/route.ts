@@ -44,6 +44,7 @@ export async function GET(
         selector: pin.selector,
         offsetX: pin.offsetX,
         offsetY: pin.offsetY,
+        anchorText: pin.anchorText,
         authorName: pin.authorName,
         createdAt: pin.createdAt.toISOString(),
         comments: commentRows.map(

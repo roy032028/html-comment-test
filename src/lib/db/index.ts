@@ -39,6 +39,7 @@ await client.executeMultiple(`
     selector TEXT,
     offset_x REAL,
     offset_y REAL,
+    anchor_text TEXT,
     author_name TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
@@ -56,6 +57,7 @@ for (const stmt of [
   "ALTER TABLE pins ADD COLUMN selector TEXT",
   "ALTER TABLE pins ADD COLUMN offset_x REAL",
   "ALTER TABLE pins ADD COLUMN offset_y REAL",
+  "ALTER TABLE pins ADD COLUMN anchor_text TEXT",
 ]) {
   try {
     await client.execute(stmt);

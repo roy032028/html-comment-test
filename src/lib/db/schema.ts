@@ -31,6 +31,7 @@ export const pins = sqliteTable("pins", {
   selector: text("selector"),
   offsetX: real("offset_x"),
   offsetY: real("offset_y"),
+  anchorText: text("anchor_text"),
   authorName: text("author_name").notNull(),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()

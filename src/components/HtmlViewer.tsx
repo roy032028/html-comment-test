@@ -49,6 +49,11 @@ function cssPath(el: Element | null, doc: Document): string | null {
   return parts.join(" > ");
 }
 
+// 요소 식별용 텍스트 서명(공백 정규화 후 앞 80자)
+function elText(el: Element): string {
+  return (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
 export default function HtmlViewer({
   projectId,
   fileId,
@@ -110,16 +115,32 @@ export default function HtmlViewer({
               btn.style.display = "none";
               continue;
             }
+            // 텍스트 서명 불일치 → 다른 요소(예: 탭 전환 후 같은 경로의 다른 요소)로 보고 숨김
+            if (pin.anchorText && elText(el) !== pin.anchorText) {
+              btn.style.display = "none";
+              continue;
+            }
             const r = el.getBoundingClientRect();
             const cs = view.getComputedStyle(el);
             const hidden =
               (r.width === 0 && r.height === 0) ||
               cs.visibility === "hidden" ||
               cs.display === "none";
-            const x = (r.left + (pin.offsetX ?? 0.5) * r.width) * s;
-            const y = (r.top + (pin.offsetY ?? 0.5) * r.height) * s;
+            // 앵커 지점(iframe 좌표)
+            const ax = r.left + (pin.offsetX ?? 0.5) * r.width;
+            const ay = r.top + (pin.offsetY ?? 0.5) * r.height;
+            const x = ax * s;
+            const y = ay * s;
             const inView = x >= 0 && x <= cw && y >= 0 && y <= ch;
-            if (hidden || !inView) {
+            // 가림 검사: 그 지점의 최상단 요소가 앵커 요소가 아니면(모달 등에 가려짐) 숨김
+            let occluded = false;
+            if (!hidden && inView) {
+              const topEl = doc.elementFromPoint(ax, ay);
+              occluded =
+                !topEl ||
+                !(topEl === el || el.contains(topEl) || topEl.contains(el));
+            }
+            if (hidden || !inView || occluded) {
               btn.style.display = "none";
             } else {
               btn.style.display = "flex";
@@ -140,6 +161,24 @@ export default function HtmlViewer({
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  // 핀이 선택되면 그 요소가 보이도록 iframe을 스크롤
+  useEffect(() => {
+    if (!activePinId) return;
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return;
+    const pin = pinsRef.current.find((p) => p.id === activePinId);
+    if (!pin?.selector) return;
+    let el: Element | null = null;
+    try {
+      el = doc.querySelector(pin.selector);
+    } catch {
+      el = null;
+    }
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }
+  }, [activePinId]);
+
   const handleOverlayClick = useCallback(
     async (e: React.MouseEvent<HTMLDivElement>) => {
       if (!isPlacingPin) return;
@@ -152,11 +191,13 @@ export default function HtmlViewer({
       let selector: string | null = null;
       let offsetX = 0.5;
       let offsetY = 0.5;
+      let anchorText: string | null = null;
       const doc = iframeRef.current?.contentDocument;
       if (doc) {
         const el = doc.elementFromPoint(ix, iy);
         if (el) {
           selector = cssPath(el, doc);
+          anchorText = elText(el);
           const r = el.getBoundingClientRect();
           if (r.width > 0) offsetX = (ix - r.left) / r.width;
           if (r.height > 0) offsetY = (iy - r.top) / r.height;
@@ -177,6 +218,7 @@ export default function HtmlViewer({
           selector,
           offsetX,
           offsetY,
+          anchorText,
         }),
       });
 
@@ -224,7 +266,7 @@ export default function HtmlViewer({
         }`}
         onClick={handleOverlayClick}
       >
-        {pins.map((pin, index) => (
+        {pins.map((pin) => (
           <button
             key={pin.id}
             ref={(node) => {
@@ -240,7 +282,7 @@ export default function HtmlViewer({
             onClick={(e) => handlePinClick(e, pin.id)}
             title={`${pin.authorName}의 핀`}
           >
-            {index + 1}
+            {pin.authorName[0]?.toUpperCase() ?? "?"}
           </button>
         ))}
       </div>

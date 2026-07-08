@@ -58,7 +58,7 @@ export default function ShareBar({
             value={authorName}
             onChange={(e) => onAuthorNameChange(e.target.value)}
             placeholder="이름"
-            className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 w-28 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="text-sm text-gray-900 placeholder:text-gray-400 border border-gray-200 rounded-lg px-3 py-1.5 w-28 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
 
           <button
