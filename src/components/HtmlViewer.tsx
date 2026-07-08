@@ -55,6 +55,34 @@ function elText(el: Element): string {
   return (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
+// 선택자 충돌(탭 등 같은 구조) 시 텍스트 서명으로 올바른 요소를 고른다
+function findAnchoredEl(doc: Document, pin: Pin): Element | null {
+  if (!pin.selector) return null;
+  let list: NodeListOf<Element>;
+  try {
+    list = doc.querySelectorAll(pin.selector);
+  } catch {
+    return null;
+  }
+  const cands = Array.from(list);
+  if (cands.length === 0) return null;
+  if (!pin.anchorText) return cands[0];
+  // 텍스트가 일치하는 요소만 유효(없으면 다른 탭 등으로 보고 없음 처리)
+  return cands.find((el) => elText(el) === pin.anchorText) ?? null;
+}
+
+// 저장된 오프너(모달/탭 트리거) — 레거시 JSON 경로면 가장 마지막(직접 트리거)만 사용
+function openerOf(pin: Pin): string | null {
+  if (!pin.openerSelector) return null;
+  try {
+    const parsed = JSON.parse(pin.openerSelector);
+    if (Array.isArray(parsed)) return parsed[parsed.length - 1] ?? null;
+  } catch {
+    /* 일반 문자열 */
+  }
+  return pin.openerSelector;
+}
+
 export default function HtmlViewer({
   projectId,
   fileId,
@@ -71,8 +99,8 @@ export default function HtmlViewer({
   const pinRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   // 모달 등으로 숨겨진 요소를 강제 표시했을 때 되돌리기 위한 복원 함수들
   const revealRestoreRef = useRef<Array<() => void>>([]);
-  // iframe 안 최근 클릭 경로(탭 전환·모달 열기 등 상태 이동 재생용)
-  const clickTrailRef = useRef<string[]>([]);
+  // iframe 안에서 마지막으로 클릭한 요소(모달/탭 트리거 추정)
+  const lastClickRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [size, setSize] = useState({ w: DESIGN_WIDTH, h: 900 });
 
@@ -118,18 +146,8 @@ export default function HtmlViewer({
           }
 
           if (pin.selector) {
-            let el: Element | null = null;
-            try {
-              el = doc.querySelector(pin.selector);
-            } catch {
-              el = null;
-            }
+            const el = findAnchoredEl(doc, pin);
             if (!el) {
-              btn.style.display = "none";
-              continue;
-            }
-            // 텍스트 서명 불일치 → 다른 요소(예: 탭 전환 후 같은 경로의 다른 요소)로 보고 숨김
-            if (pin.anchorText && elText(el) !== pin.anchorText) {
               btn.style.display = "none";
               continue;
             }
@@ -183,7 +201,6 @@ export default function HtmlViewer({
     if (!activePinId) return;
     const pin = pinsRef.current.find((p) => p.id === activePinId);
     if (!pin?.selector) return;
-    const selector = pin.selector;
 
     let cancelled = false;
     const delay = (ms: number) =>
@@ -243,31 +260,27 @@ export default function HtmlViewer({
       revealRestoreRef.current = restores;
     };
 
+    const findTarget = (): Element | null => {
+      const d = getDoc();
+      return d ? findAnchoredEl(d, pin) : null;
+    };
+
     (async () => {
-      // 아직 안 보이면 저장된 클릭 경로를 순서대로 재생(탭→모달 등), 보이면 중단
-      if (!isVisible(query(selector))) {
-        let trail: string[] = [];
-        if (pin.openerSelector) {
-          try {
-            const parsed = JSON.parse(pin.openerSelector);
-            trail = Array.isArray(parsed) ? parsed : [pin.openerSelector];
-          } catch {
-            trail = [pin.openerSelector];
-          }
-        }
-        for (const sel of trail) {
-          if (cancelled) return;
-          if (isVisible(query(selector))) break;
-          const step = query(sel);
+      // 올바른(텍스트 일치) 요소가 아직 안 보이면 오프너(모달/탭 트리거)를 한 번 클릭
+      let el = findTarget();
+      if (!el || !isVisible(el)) {
+        const opener = openerOf(pin);
+        if (opener) {
+          const step = query(opener);
           if (step) {
             (step as HTMLElement).click();
-            await delay(300);
+            await delay(350);
+            if (cancelled) return;
           }
         }
       }
-      if (cancelled) return;
 
-      const el = query(selector);
+      el = findTarget();
       if (!el) return; // 끝내 못 찾음
       if (!isVisible(el)) forceReveal(el); // DOM엔 있으나 CSS로 숨겨진 경우
       el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
@@ -326,9 +339,7 @@ export default function HtmlViewer({
           offsetX,
           offsetY,
           anchorText,
-          openerSelector: clickTrailRef.current.length
-            ? JSON.stringify(clickTrailRef.current)
-            : null,
+          openerSelector: lastClickRef.current,
         }),
       });
 
@@ -359,12 +370,7 @@ export default function HtmlViewer({
         (e) => {
           const target = e.target as Element | null;
           if (target && target.nodeType === 1) {
-            const sel = cssPath(target, doc);
-            if (sel) {
-              const trail = clickTrailRef.current;
-              if (trail[trail.length - 1] !== sel) trail.push(sel);
-              if (trail.length > 5) trail.shift();
-            }
+            lastClickRef.current = cssPath(target, doc);
           }
         },
         true
