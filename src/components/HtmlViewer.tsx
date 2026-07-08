@@ -196,7 +196,7 @@ export default function HtmlViewer({
 
     if (!activePinId) return;
     const pin = pinsRef.current.find((p) => p.id === activePinId);
-    if (!pin?.selector) return;
+    if (!pin) return;
 
     let cancelled = false;
     const delay = (ms: number) =>
@@ -261,28 +261,59 @@ export default function HtmlViewer({
       return d ? findAnchoredEl(d, pin) : null;
     };
 
+    const scrollToCoord = () => {
+      const doc = getDoc();
+      const view = getView();
+      if (!doc) return;
+      const scroller = (doc.scrollingElement ||
+        doc.documentElement) as HTMLElement | null;
+      if (!scroller) return;
+      const top =
+        (pin.yPercent / 100) * scroller.scrollHeight -
+        (view?.innerHeight ?? scroller.clientHeight) / 2;
+      const left =
+        (pin.xPercent / 100) * scroller.scrollWidth -
+        (view?.innerWidth ?? scroller.clientWidth) / 2;
+      scroller.scrollTo({
+        top: Math.max(0, top),
+        left: Math.max(0, left),
+        behavior: "smooth",
+      });
+    };
+
     (async () => {
-      // 올바른(텍스트 일치) 요소가 안 보이면, 클릭 경로를 최신→과거 순으로 재생
-      // (탭 버튼/모달 버튼에서 대상이 보이면 즉시 멈춰 불필요한 클릭 방지)
-      let el = findTarget();
-      if (!el || !isVisible(el)) {
-        for (const sel of openerTrail(pin)) {
-          if (cancelled) return;
-          const cur = findTarget();
-          if (cur && isVisible(cur)) break;
-          const step = query(sel);
-          if (step) {
-            (step as HTMLElement).click();
-            await delay(320);
+      if (pin.selector) {
+        // 올바른(텍스트 일치) 요소가 안 보이면, 클릭 경로를 최신→과거 순으로 재생
+        let el = findTarget();
+        if (!el || !isVisible(el)) {
+          for (const sel of openerTrail(pin)) {
             if (cancelled) return;
+            const cur = findTarget();
+            if (cur && isVisible(cur)) break;
+            const step = query(sel);
+            if (step) {
+              (step as HTMLElement).click();
+              await delay(320);
+              if (cancelled) return;
+            }
           }
+        }
+
+        // 정확한 요소 → 없으면 텍스트 무시 첫 요소라도
+        el = findTarget() || query(pin.selector);
+        if (el) {
+          if (!isVisible(el)) forceReveal(el);
+          el.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+            inline: "center",
+          });
+          return;
         }
       }
 
-      el = findTarget();
-      if (!el) return; // 끝내 못 찾음
-      if (!isVisible(el)) forceReveal(el); // DOM엔 있으나 CSS로 숨겨진 경우
-      el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      // 끝내 요소를 못 찾으면(또는 좌표 핀) 저장된 좌표로 대략 이동 — 무조건 화면 전환
+      scrollToCoord();
     })();
 
     return () => {

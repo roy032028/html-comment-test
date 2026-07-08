@@ -45,21 +45,23 @@ export default function ReviewPage({
     }
     const data: FileReview = await res.json();
     setFileName(data.file.filename);
-    setPins(data.pins);
+    // 아직 서버에 확정되지 않은 임시(temp) 핀은 보존(재조회가 낙관적 핀을 지우지 않도록)
+    setPins((prev) => {
+      const temps = prev.filter((p) => p.id.startsWith("temp-"));
+      return [...data.pins, ...temps];
+    });
     setLoading(false);
   }, [projectId, fileId]);
 
   useEffect(() => {
     fetchPins();
-    // 주기적 폴링 대신, 탭에 다시 들어올 때(포커스/가시성 변경)만 갱신
-    const onFocus = () => fetchPins();
+    // 주기적 폴링 대신, 탭이 다시 보일 때만 갱신
+    // (window 'focus'는 iframe 포커스 변화로 자주 터져 낙관적 핀을 지울 수 있어 제외)
     const onVisible = () => {
       if (document.visibilityState === "visible") fetchPins();
     };
-    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [fetchPins]);
@@ -113,7 +115,11 @@ export default function ReviewPage({
   };
 
   const handlePinConfirmed = (tempId: string, pin: Pin) => {
-    setPins((prev) => prev.map((p) => (p.id === tempId ? pin : p)));
+    setPins((prev) =>
+      prev.some((p) => p.id === tempId)
+        ? prev.map((p) => (p.id === tempId ? pin : p))
+        : [...prev, pin]
+    );
     setActivePinId((cur) => (cur === tempId ? pin.id : cur));
   };
 
