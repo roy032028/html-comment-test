@@ -131,9 +131,12 @@ export default function CommentPanel({
 
   const activePin = pins.find((p) => p.id === activePinId) ?? null;
 
+  // 낙관적으로 방금 찍은 핀은 서버 저장 전(temp id)이라 댓글 등록이 실패할 수 있음
+  const pinPending = !!activePin && activePin.id.startsWith("temp-");
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activePin || !body.trim() || submitting) return;
+    if (!activePin || pinPending || !body.trim() || submitting) return;
 
     setSubmitting(true);
     const res = await fetch(`/api/pins/${activePin.id}/comments`, {
@@ -296,11 +299,13 @@ export default function CommentPanel({
             />
             <button
               type="submit"
-              disabled={!body.trim() || submitting}
+              disabled={!body.trim() || submitting || pinPending}
               className="mt-2 w-full bg-blue-500 text-white text-sm font-medium py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {submitting
                 ? "등록 중..."
+                : pinPending
+                ? "핀 저장 중..."
                 : activePin.comments.length > 0
                 ? "답글 등록"
                 : "댓글 등록"}

@@ -280,34 +280,6 @@ export default function HtmlViewer({
       });
     };
 
-    const reloadIframe = () =>
-      new Promise<void>((resolve) => {
-        const ifr = iframeRef.current;
-        if (!ifr) return resolve();
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          ifr.removeEventListener("load", finish);
-          resolve();
-        };
-        ifr.addEventListener("load", finish);
-        try {
-          ifr.contentWindow?.location.reload();
-        } catch {
-          ifr.src = ifr.src;
-        }
-        window.setTimeout(finish, 5000);
-      });
-
-    const waitReady = async () => {
-      for (let i = 0; i < 30; i++) {
-        const d = getDoc();
-        if (d && d.body && d.readyState !== "loading") return;
-        await delay(100);
-      }
-    };
-
     (async () => {
       // 1) 현재 상태에 정확한 요소가 보이면 스크롤만(가장 빠름)
       let el = findTarget();
@@ -316,24 +288,22 @@ export default function HtmlViewer({
         return;
       }
 
-      // 2) 안 보이면 iframe을 새로고침해 깨끗한 상태에서 경로를 처음→끝 순서로 재생(결정적 복원)
+      // 2) 새로고침 없이 현재 상태에서 클릭 경로를 처음→끝 순서로 재생.
+      //    "다음 단계(또는 최종 대상)가 이미 보이면" 그 단계는 이미 수행된 것으로 보고 건너뛴다
+      //    → 이미 열린 detail의 행을 다시 눌러 닫아버리는 토글을 방지
       const trail = pin.selector ? openerTrail(pin) : [];
-      if (trail.length) {
-        await reloadIframe();
+      for (let i = 0; i < trail.length; i++) {
         if (cancelled) return;
-        await waitReady();
-        if (cancelled) return;
-        await delay(250); // 앱 초기 렌더 여유
-        for (const sel of trail) {
+        const cur = findTarget();
+        if (cur && isVisible(cur)) break;
+        const nextSel = i + 1 < trail.length ? trail[i + 1] : null;
+        const nextEl = nextSel ? query(nextSel) : null;
+        if (nextEl && isVisible(nextEl)) continue; // 이 단계는 이미 도달함 → 건너뜀
+        const step = query(trail[i]);
+        if (step) {
+          (step as HTMLElement).click();
+          await delay(300);
           if (cancelled) return;
-          const cur = findTarget();
-          if (cur && isVisible(cur)) break;
-          const step = query(sel);
-          if (step) {
-            (step as HTMLElement).click();
-            await delay(350);
-            if (cancelled) return;
-          }
         }
       }
 
