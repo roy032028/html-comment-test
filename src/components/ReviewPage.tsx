@@ -50,8 +50,17 @@ export default function ReviewPage({
 
   useEffect(() => {
     fetchPins();
-    const interval = setInterval(fetchPins, 5000);
-    return () => clearInterval(interval);
+    // 주기적 폴링 대신, 탭에 다시 들어올 때(포커스/가시성 변경)만 갱신
+    const onFocus = () => fetchPins();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") fetchPins();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [fetchPins]);
 
   const listHref =
@@ -76,6 +85,8 @@ export default function ReviewPage({
   const handlePinPlaced = (pin: Pin) => {
     setPins((prev) => [...prev, pin]);
     setIsPlacingPin(false);
+    // 핀 추가 시 전체를 다시 불러와 최신 상태(다른 사람 핀 포함)로 동기화
+    fetchPins();
   };
 
   const handleCommentAdded = (pinId: string, comment: Pin["comments"][0]) => {
