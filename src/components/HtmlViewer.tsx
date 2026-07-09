@@ -359,7 +359,7 @@ export default function HtmlViewer({
         const el = test();
         if (el) return el;
         if (Date.now() >= end) return null;
-        await delay(120);
+        await delay(70);
       }
     };
     const reloadIframe = () =>
@@ -399,7 +399,14 @@ export default function HtmlViewer({
       log("2) reload 시작");
       await reloadIframe();
       if (cancelled) return;
-      await delay(1000); // 프레임워크 렌더 대기(큰 번들)
+      // 고정 대기 대신 앱이 렌더될 때까지 적응형으로 대기(준비되면 즉시 진행)
+      await waitFor(() => {
+        const d = getDoc();
+        return d && d.body && d.body.childElementCount > 0 && d.readyState !== "loading"
+          ? d.body
+          : null;
+      }, 5000);
+      if (cancelled) return;
       log("2) reload 후 found?", !!found(), "trail 길이", trail.length);
       // 초기 상태에서 바로 보이면(기본 목록 댓글) 재생 안 함 → 엉뚱한 클릭/모달 없음
       if (!found() && trail.length) {
@@ -417,10 +424,14 @@ export default function HtmlViewer({
           if (cancelled) return;
           if (step) {
             clickEl(step);
-            await delay(500);
+            // 다음 단계 요소(또는 대상)가 나타나는 즉시 진행 — 고정 지연 제거
+            await waitFor(
+              () => found() ?? (nextSel ? query(nextSel) : found()),
+              3000
+            );
           }
         }
-        await waitFor(found, 4000);
+        await waitFor(found, 3000);
         if (cancelled) return;
       }
 

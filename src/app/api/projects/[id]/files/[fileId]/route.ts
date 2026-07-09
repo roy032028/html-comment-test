@@ -33,6 +33,8 @@ export async function GET(
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
+      // fileId별 URL은 불변 → 새로고침 시 브라우저 캐시 재사용(재다운로드 방지)
+      "Cache-Control": "private, max-age=3600",
     },
   });
 }
