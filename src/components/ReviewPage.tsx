@@ -128,6 +128,12 @@ export default function ReviewPage({
     setActivePinId((cur) => (cur === tempId ? null : cur));
   };
 
+  const handlePinMoved = (pinId: string, patch: Partial<Pin>) => {
+    setPins((prev) =>
+      prev.map((p) => (p.id === pinId ? { ...p, ...patch } : p))
+    );
+  };
+
   const handleCommentAdded = (pinId: string, comment: Pin["comments"][0]) => {
     setPins((prev) =>
       prev.map((p) =>
@@ -220,6 +226,7 @@ export default function ReviewPage({
           onPinPlaced={handlePinPlaced}
           onPinConfirmed={handlePinConfirmed}
           onPinFailed={handlePinFailed}
+          onPinMoved={handlePinMoved}
           onPinSelect={handleSelectPin}
         />
 

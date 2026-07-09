@@ -14,6 +14,7 @@ interface HtmlViewerProps {
   onPinPlaced: (pin: Pin) => void;
   onPinConfirmed: (tempId: string, pin: Pin) => void;
   onPinFailed: (tempId: string) => void;
+  onPinMoved: (pinId: string, patch: Partial<Pin>) => void;
   onPinSelect: (pinId: string | null) => void;
 }
 
@@ -120,6 +121,7 @@ export default function HtmlViewer({
   onPinPlaced,
   onPinConfirmed,
   onPinFailed,
+  onPinMoved,
   onPinSelect,
 }: HtmlViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -129,6 +131,13 @@ export default function HtmlViewer({
   const revealRestoreRef = useRef<Array<() => void>>([]);
   // iframe 안 최근 클릭 경로(탭/모달 트리거 재생용, 최신이 마지막)
   const clickTrailRef = useRef<string[]>([]);
+  // 핀 드래그 이동 상태
+  const dragRef = useRef<{
+    id: string;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [size, setSize] = useState({ w: 1000, h: 700 });
 
@@ -168,6 +177,9 @@ export default function HtmlViewer({
             btn.style.display = "none";
             continue;
           }
+
+          // 드래그 중인 핀은 위치를 드래그가 제어 → rAF는 건너뜀
+          if (dragRef.current?.moved && dragRef.current.id === pin.id) continue;
 
           let placed = false;
           if (pin.selector) {
@@ -458,72 +470,73 @@ export default function HtmlViewer({
     };
   }, []);
 
-  const handleOverlayClick = useCallback(
-    async (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isPlacingPin) return;
+  // 화면 좌표(clientX/Y)의 지점을 iframe 요소 앵커 정보로 계산 (핀 찍기/드래그 이동 공용)
+  const computeAnchorAt = useCallback((clientX: number, clientY: number) => {
+    const cont = containerRef.current;
+    const doc = iframeRef.current?.contentDocument;
+    const win = iframeRef.current?.contentWindow;
+    if (!cont) return null;
+    const rect = cont.getBoundingClientRect();
+    const ix = clientX - rect.left; // iframe 좌표계(스케일 없음)
+    const iy = clientY - rect.top;
 
-      const rect = e.currentTarget.getBoundingClientRect();
-      const ix = e.clientX - rect.left; // iframe 좌표계(스케일 없음)
-      const iy = e.clientY - rect.top;
-
-      let selector: string | null = null;
-      let offsetX = 0.5;
-      let offsetY = 0.5;
-      let anchorText: string | null = null;
-      let inModal = false;
-      const doc = iframeRef.current?.contentDocument;
-      const win = iframeRef.current?.contentWindow;
-      if (doc) {
-        const el = doc.elementFromPoint(ix, iy);
-        if (el) {
-          selector = cssPath(el, doc);
-          anchorText = ctxText(el); // 문맥 서명(아이콘 등 텍스트 없어도 주변 텍스트로 식별)
-          const r = el.getBoundingClientRect();
-          if (r.width > 0) offsetX = (ix - r.left) / r.width;
-          if (r.height > 0) offsetY = (iy - r.top) / r.height;
-          // 이 요소가 오버레이(모달/드롭다운/팝오버 등 떠 있는 레이어) 안인지 판별
-          if (win) {
-            const vw = win.innerWidth;
-            const vh = win.innerHeight;
-            let a: HTMLElement | null = el.parentElement;
-            while (a) {
-              const cs = win.getComputedStyle(a);
-              if (cs.position === "fixed" || cs.position === "absolute") {
-                const z = parseInt(cs.zIndex || "0", 10);
-                const ar = a.getBoundingClientRect();
-                const large = ar.width > vw * 0.5 && ar.height > vh * 0.4;
-                // fixed(모달) / 큰 박스(모달) / z-index 높은 absolute(드롭다운·팝오버)
-                if (cs.position === "fixed" || large || (Number.isFinite(z) && z >= 10)) {
-                  inModal = true;
-                  break;
-                }
+    let selector: string | null = null;
+    let offsetX = 0.5;
+    let offsetY = 0.5;
+    let anchorText: string | null = null;
+    let inModal = false;
+    if (doc) {
+      const el = doc.elementFromPoint(ix, iy);
+      if (el) {
+        selector = cssPath(el, doc);
+        anchorText = ctxText(el);
+        const r = el.getBoundingClientRect();
+        if (r.width > 0) offsetX = (ix - r.left) / r.width;
+        if (r.height > 0) offsetY = (iy - r.top) / r.height;
+        if (win) {
+          const vw = win.innerWidth;
+          const vh = win.innerHeight;
+          let a: HTMLElement | null = el.parentElement;
+          while (a) {
+            const cs = win.getComputedStyle(a);
+            if (cs.position === "fixed" || cs.position === "absolute") {
+              const z = parseInt(cs.zIndex || "0", 10);
+              const ar = a.getBoundingClientRect();
+              const large = ar.width > vw * 0.5 && ar.height > vh * 0.4;
+              if (cs.position === "fixed" || large || (Number.isFinite(z) && z >= 10)) {
+                inModal = true;
+                break;
               }
-              a = a.parentElement;
             }
+            a = a.parentElement;
           }
         }
       }
+    }
+    const xPercent = rect.width ? (ix / rect.width) * 100 : 0;
+    const yPercent = rect.height ? (iy / rect.height) * 100 : 0;
+    const openerSelector = JSON.stringify({ t: clickTrailRef.current, m: inModal });
+    return { selector, offsetX, offsetY, anchorText, xPercent, yPercent, openerSelector };
+  }, []);
 
-      const xPercent = rect.width ? (ix / rect.width) * 100 : 0;
-      const yPercent = rect.height ? (iy / rect.height) * 100 : 0;
-      // 클릭 경로 + 모달 여부를 함께 저장
-      const openerSelector = JSON.stringify({
-        t: clickTrailRef.current,
-        m: inModal,
-      });
+  const handleOverlayClick = useCallback(
+    async (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isPlacingPin) return;
+      const a = computeAnchorAt(e.clientX, e.clientY);
+      if (!a) return;
 
-      // 낙관적: 즉시 핀을 표시하고 저장은 백그라운드에서 처리(서버 왕복 대기 제거)
+      // 낙관적: 즉시 핀을 표시하고 저장은 백그라운드에서 처리
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const optimistic: Pin = {
         id: tempId,
         fileId,
-        xPercent,
-        yPercent,
-        selector,
-        offsetX,
-        offsetY,
-        anchorText,
-        openerSelector,
+        xPercent: a.xPercent,
+        yPercent: a.yPercent,
+        selector: a.selector,
+        offsetX: a.offsetX,
+        offsetY: a.offsetY,
+        anchorText: a.anchorText,
+        openerSelector: a.openerSelector,
         authorName,
         createdAt: new Date().toISOString(),
         comments: [],
@@ -535,29 +548,17 @@ export default function HtmlViewer({
         const res = await fetch(`/api/projects/${projectId}/pins`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            xPercent,
-            yPercent,
-            authorName,
-            fileId,
-            selector,
-            offsetX,
-            offsetY,
-            anchorText,
-            openerSelector,
-          }),
+          body: JSON.stringify({ ...a, authorName, fileId }),
         });
-        if (res.ok) {
-          onPinConfirmed(tempId, await res.json());
-        } else {
-          onPinFailed(tempId);
-        }
+        if (res.ok) onPinConfirmed(tempId, await res.json());
+        else onPinFailed(tempId);
       } catch {
         onPinFailed(tempId);
       }
     },
     [
       isPlacingPin,
+      computeAnchorAt,
       projectId,
       fileId,
       authorName,
@@ -568,12 +569,62 @@ export default function HtmlViewer({
     ]
   );
 
-  const handlePinClick = useCallback(
-    (e: React.MouseEvent, pinId: string) => {
+  // 핀 드래그: 이동하면 그 지점 요소로 재부착, 안 움직이면 선택
+  const handlePinPointerDown = useCallback(
+    (e: React.PointerEvent, pinId: string) => {
       e.stopPropagation();
-      onPinSelect(activePinId === pinId ? null : pinId);
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      dragRef.current = {
+        id: pinId,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
     },
-    [activePinId, onPinSelect]
+    []
+  );
+
+  const handlePinPointerMove = useCallback((e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > 5)
+      d.moved = true;
+    if (d.moved) {
+      const btn = pinRefs.current.get(d.id);
+      const cont = containerRef.current;
+      if (btn && cont) {
+        const r = cont.getBoundingClientRect();
+        btn.style.display = "flex";
+        btn.style.left = `${e.clientX - r.left}px`;
+        btn.style.top = `${e.clientY - r.top}px`;
+      }
+    }
+  }, []);
+
+  const handlePinPointerUp = useCallback(
+    async (e: React.PointerEvent, pinId: string) => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      if (!d) return;
+      if (!d.moved) {
+        onPinSelect(activePinId === pinId ? null : pinId);
+        return;
+      }
+      // 드래그 종료 → 그 지점 요소로 재부착
+      const a = computeAnchorAt(e.clientX, e.clientY);
+      if (!a) return;
+      onPinMoved(pinId, a);
+      try {
+        await fetch(`/api/pins/${pinId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(a),
+        });
+      } catch {
+        /* 실패해도 로컬은 갱신됨 */
+      }
+    },
+    [activePinId, computeAnchorAt, onPinMoved, onPinSelect]
   );
 
   const handleLoad = useCallback(() => {
@@ -627,14 +678,16 @@ export default function HtmlViewer({
               if (node) pinRefs.current.set(pin.id, node);
               else pinRefs.current.delete(pin.id);
             }}
-            className={`pointer-events-auto absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-md transition-transform hover:scale-110 ${
+            className={`pointer-events-auto absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-md transition-transform hover:scale-110 cursor-grab active:cursor-grabbing touch-none ${
               activePinId === pin.id
                 ? "bg-orange-500 ring-2 ring-orange-300 scale-110 z-20"
                 : "bg-blue-500 hover:bg-blue-600 z-10"
             }`}
             style={{ left: 0, top: 0, display: "none" }}
-            onClick={(e) => handlePinClick(e, pin.id)}
-            title={`${pin.authorName}의 댓글`}
+            onPointerDown={(e) => handlePinPointerDown(e, pin.id)}
+            onPointerMove={handlePinPointerMove}
+            onPointerUp={(e) => handlePinPointerUp(e, pin.id)}
+            title={`${pin.authorName}의 댓글 (드래그로 이동)`}
           >
             {pin.authorName[0]?.toUpperCase() ?? "?"}
           </button>
