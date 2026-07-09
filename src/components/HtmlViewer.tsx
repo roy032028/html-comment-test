@@ -312,7 +312,15 @@ export default function HtmlViewer({
       const r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) return false;
       const cs = view.getComputedStyle(el);
-      return cs.visibility !== "hidden" && cs.display !== "none";
+      if (cs.visibility === "hidden" || cs.display === "none") return false;
+      // 자신/조상이 투명(opacity≈0)하면 사용자 눈엔 안 보임(비활성 슬라이드/캐러셀 패널 등)
+      let a: Element | null = el;
+      const body = getDoc()?.body;
+      for (let i = 0; a && a !== body && i < 20; i++) {
+        if (parseFloat(view.getComputedStyle(a).opacity || "1") < 0.05) return false;
+        a = a.parentElement;
+      }
+      return true;
     };
     // "지금 화면에 실제로 떠 있는가" 판정.
     // 닫힌 드로어/모달은 DOM에 남아 transform으로 화면 밖에 밀려 있을 뿐이라
@@ -545,8 +553,10 @@ export default function HtmlViewer({
         // 기록된 클릭을 순서대로 재생(탭 전환 → 상세 진입 → 모달/드로어 열기 등).
         // 각 단계는 라벨 텍스트로 재탐색하므로 새 DOM 구조에서도 찾아낸다.
         isReplayingRef.current = true;
-        // 전체 재생 예산: 노이즈 많은 경로에서도 과도한 대기(버벅임) 방지
-        const replayDeadline = Date.now() + 9000;
+        // 전체 재생 예산: 노이즈 많은 경로에서도 과도한 대기(버벅임) 방지.
+        // 경로가 길수록 여유를 더 준다(단계당 ~600ms) → 느린 환경에서도 완주.
+        const replayDeadline =
+          Date.now() + Math.min(16000, 6000 + trail.length * 600);
         try {
           for (let i = 0; i < trail.length; i++) {
             if (cancelled) return;
@@ -556,9 +566,8 @@ export default function HtmlViewer({
               break;
             }
             const step = trail[i];
-            // 직전 클릭의 렌더가 반영될 때까지 짧게 대기 후 요소 확보
-            // (못 찾는 노이즈 단계에서 오래 매달리지 않도록 타임아웃을 줄임)
-            const el = await waitFor(() => resolveStep(step), 1200);
+            // 있으면 즉시, 없으면 짧게만 대기(노이즈 단계에 매달리지 않음)
+            const el = await waitFor(() => resolveStep(step), 700);
             log(`  단계 ${i} 클릭:`, step.x || step.s, "찾음?", !!el);
             if (cancelled) return;
             if (el) {
@@ -567,11 +576,41 @@ export default function HtmlViewer({
               // 대상이 보이거나 다음 단계 요소가 준비되면 즉시 진행
               await waitFor(
                 () => pickVisible() ?? (next ? resolveStep(next) : pickVisible()),
-                1800
+                1000
               );
             }
           }
-          await waitFor(pickVisible, 2500);
+          await waitFor(pickVisible, 2000);
+
+          // 슬라이드/캐러셀 등 "다음(▶)"을 여러 번 눌러야 도달하는 화면:
+          // 대상이 DOM엔 있으나 화면 밖이면, 처음으로 되돌린 뒤 방향 컨트롤을 반복 클릭.
+          // (안전장치: 명확한 방향 표시가 있는 컨트롤에 한정 → "닫기/반려" 오클릭 방지)
+          if (!cancelled && !pickVisible() && findTarget()) {
+            const navs = trail
+              .filter((s) => s.x && s.x.length <= 3 && /[▶▸►›→»⟩❯⟶]/.test(s.x))
+              .filter((s, i, a) => a.findIndex((x) => x.x === s.x) === i);
+            if (navs.length) {
+              log("  전진 컨트롤 반복 클릭", navs.map((s) => s.x));
+              await reloadIframe();
+              await waitFor(() => {
+                const d = getDoc();
+                return d && d.body && d.body.childElementCount > 0 && d.readyState !== "loading"
+                  ? d.body
+                  : null;
+              }, 5000);
+              for (const step of navs) {
+                for (let k = 0; k < 40; k++) {
+                  if (cancelled || pickVisible() || Date.now() > replayDeadline + 4000)
+                    break;
+                  const el = resolveStep(step);
+                  if (!el) break;
+                  clickEl(el);
+                  await delay(90);
+                }
+                if (pickVisible() || cancelled) break;
+              }
+            }
+          }
         } finally {
           isReplayingRef.current = false;
         }
