@@ -80,18 +80,68 @@ function matchesAnchor(el: Element, pin: Pin): boolean {
   );
 }
 
+// 클릭 경로의 한 단계: 선택자(힌트) + 라벨 텍스트(견고한 매칭용) + 태그
+type TrailStep = { s: string | null; x: string; g: string };
+
+// 라벨 정규화(공백 정리 후 앞 120자) — 클릭 대상 식별/매칭 공용
+function normLabel(s: string): string {
+  return (s || "").replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+// 두 CSS 경로의 "꼬리에서부터 일치하는 세그먼트 수" — 텍스트 중복 시 구조로 후보 선별
+function selectorSuffixScore(a: string | null, b: string | null): number {
+  if (!a || !b) return 0;
+  const pa = a.split(" > ");
+  const pb = b.split(" > ");
+  let n = 0;
+  while (n < pa.length && n < pb.length && pa[pa.length - 1 - n] === pb[pb.length - 1 - n]) n++;
+  return n;
+}
+
+// 클릭 재생 대상으로 삼을 "행동 가능한" 요소 셀렉터
+// (스위치/체크박스/입력 등 텍스트가 없는 컨트롤도 포함)
+const ACTIONABLE =
+  "button,[role='button'],a,[role='tab'],[role='menuitem'],[role='switch'],[role='checkbox'],input,select,label,tr,td,li,[onclick],[tabindex]";
+
+// 텍스트가 없는 컨트롤(스위치 등)의 라벨 대체값
+function controlLabel(el: Element): string {
+  const a = el as HTMLElement;
+  return normLabel(
+    a.getAttribute?.("aria-label") ||
+      a.getAttribute?.("title") ||
+      a.getAttribute?.("placeholder") ||
+      a.getAttribute?.("name") ||
+      ""
+  );
+}
+
 // openerSelector에 저장된 정보 파싱: 클릭 경로(trail)와 "모달 안에서 찍었는지"(inModal)
-function parseOpener(pin: Pin): { trail: string[]; inModal: boolean } {
+// 하위호환: 옛 형식(문자열/문자열 배열/{t:string[]})도 TrailStep으로 승격
+function parseOpener(pin: Pin): { trail: TrailStep[]; inModal: boolean } {
   if (!pin.openerSelector) return { trail: [], inModal: false };
+  const toStep = (v: unknown): TrailStep | null => {
+    if (typeof v === "string") return { s: v, x: "", g: "" };
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      return {
+        s: typeof o.s === "string" ? o.s : null,
+        x: typeof o.x === "string" ? o.x : "",
+        g: typeof o.g === "string" ? o.g : "",
+      };
+    }
+    return null;
+  };
+  const toTrail = (arr: unknown[]): TrailStep[] =>
+    arr.map(toStep).filter((s): s is TrailStep => !!s);
   try {
     const p = JSON.parse(pin.openerSelector);
-    if (Array.isArray(p)) return { trail: p, inModal: false }; // 레거시(배열)
+    if (Array.isArray(p)) return { trail: toTrail(p), inModal: false };
     if (p && typeof p === "object")
-      return { trail: Array.isArray(p.t) ? p.t : [], inModal: !!p.m };
+      return { trail: Array.isArray(p.t) ? toTrail(p.t) : [], inModal: !!p.m };
   } catch {
     /* 일반 문자열(아주 오래된 형식) */
   }
-  return { trail: [pin.openerSelector], inModal: false };
+  return { trail: [{ s: pin.openerSelector, x: "", g: "" }], inModal: false };
 }
 
 // 선택자 충돌(탭 등 같은 구조) 시 텍스트 서명으로 올바른 요소를 고른다
@@ -130,7 +180,9 @@ export default function HtmlViewer({
   // 모달 등으로 숨겨진 요소를 강제 표시했을 때 되돌리기 위한 복원 함수들
   const revealRestoreRef = useRef<Array<() => void>>([]);
   // iframe 안 최근 클릭 경로(탭/모달 트리거 재생용, 최신이 마지막)
-  const clickTrailRef = useRef<string[]>([]);
+  const clickTrailRef = useRef<TrailStep[]>([]);
+  // 경로 재생 중에는 프로그램 클릭이 기록되지 않도록 잠근다
+  const isReplayingRef = useRef(false);
   // 핀 드래그 이동 상태
   const dragRef = useRef<{
     id: string;
@@ -262,6 +314,28 @@ export default function HtmlViewer({
       const cs = view.getComputedStyle(el);
       return cs.visibility !== "hidden" && cs.display !== "none";
     };
+    // "지금 화면에 실제로 떠 있는가" 판정.
+    // 닫힌 드로어/모달은 DOM에 남아 transform으로 화면 밖에 밀려 있을 뿐이라
+    // isVisible로는 '보인다'가 되어버린다 → 뷰포트 교차 + fixed/sticky 여부로 가려낸다.
+    const isOnScreen = (el: Element | null): boolean => {
+      const view = getView();
+      if (!el || !view || !isVisible(el)) return false;
+      const r = el.getBoundingClientRect();
+      const vw = view.innerWidth;
+      const vh = view.innerHeight;
+      const intersects =
+        r.right > 0 && r.left < vw && r.bottom > 0 && r.top < vh;
+      if (intersects) return true;
+      // 뷰포트 밖: 일반 흐름이면 스크롤로 닿으니 OK, fixed/sticky 오버레이면 숨겨진 것으로 간주
+      let a: Element | null = el;
+      const body = getDoc()?.body;
+      while (a && a !== body) {
+        const pos = view.getComputedStyle(a).position;
+        if (pos === "fixed" || pos === "sticky") return false;
+        a = a.parentElement;
+      }
+      return true;
+    };
     const forceReveal = (el: Element) => {
       const doc = getDoc();
       const view = getView();
@@ -323,7 +397,7 @@ export default function HtmlViewer({
       });
     };
 
-    // 현재 화면에 그 선택자와 일치하는 "보이는" 요소(텍스트 일치 우선, 없으면 첫 매치)
+    // 지금 화면에 실제로 떠 있는(뷰포트 안/스크롤로 닿는) 대상 요소. 텍스트 일치 우선.
     const pickVisible = (): Element | null => {
       const d = getDoc();
       if (!d || !pin.selector) return null;
@@ -333,7 +407,7 @@ export default function HtmlViewer({
       } catch {
         return null;
       }
-      const vis = Array.from(list).filter((e) => isVisible(e));
+      const vis = Array.from(list).filter((e) => isOnScreen(e));
       if (vis.length === 0) return null;
       if (!pin.anchorText) return vis[0];
       // 문맥 서명으로 일치하는 것만(다른 탭/화면의 같은 구조 요소 오인 방지)
@@ -345,15 +419,60 @@ export default function HtmlViewer({
       el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
     };
 
-    // 현재 요소(보이든 숨었든) 찾기
-    const found = (): Element | null => pickVisible() || findTarget();
+    // 트레일 한 단계를 현재 DOM에서 다시 찾는다.
+    // 절대경로가 안 맞아도(새로고침 후 구조 변화) 라벨 텍스트로 재탐색 → 견고.
+    // 같은 텍스트가 여러 개면(예: 표마다 "미확정" 배지) 구조(태그·선택자 꼬리)로 정확히 고른다.
+    const resolveStep = (step: TrailStep): Element | null => {
+      const d = getDoc();
+      // 1) 선택자 힌트가 지금 유효하고 보이면 그대로 사용(가장 정확)
+      if (step.s) {
+        const el = query(step.s);
+        if (el && isVisible(el)) return el;
+      }
+      // 텍스트가 일치하는 후보들 중 구조(태그·선택자 꼬리)로 가장 가까운 하나를 고른다
+      const pick = (cands: Element[]): Element | null => {
+        if (cands.length === 0) return null;
+        if (cands.length === 1) return cands[0];
+        const scored = cands.map((e) => ({
+          e,
+          tagOk: e.tagName.toLowerCase() === step.g ? 1 : 0,
+          suf: step.s ? selectorSuffixScore(cssPath(e, d!), step.s) : 0,
+          len: (e.textContent || "").length,
+        }));
+        scored.sort((a, b) => b.tagOk - a.tagOk || b.suf - a.suf || a.len - b.len);
+        return scored[0].e;
+      };
+      const matchByText = (els: Element[]): Element[] => {
+        let c = els.filter((e) => normLabel(e.textContent || "") === step.x);
+        if (c.length === 0 && step.x.length > 1)
+          c = els.filter((e) => normLabel(e.textContent || "").startsWith(step.x));
+        return c;
+      };
+      if (step.x && d) {
+        // 2) 표준 클릭 요소(버튼/링크/탭/행 등)에서 라벨 텍스트로 탐색
+        const actionable = Array.from(d.querySelectorAll(ACTIONABLE)).filter(
+          (e) => isVisible(e)
+        );
+        const hit = pick(matchByText(actionable));
+        if (hit) return hit;
+        // 2.5) 표준 요소로 못 찾으면 임의 태그(예: <div onclick>)까지 넓혀 재탐색.
+        //      큰 컨테이너 오클릭 방지를 위해 자식 3개 이하의 말단 요소만 후보로.
+        const leafish = Array.from(d.querySelectorAll<Element>("*")).filter(
+          (e) => e.childElementCount <= 3 && isVisible(e)
+        );
+        const hit2 = pick(matchByText(leafish));
+        if (hit2) return hit2;
+      }
+      // 3) 최후: 보이지 않아도 선택자 매치
+      return step.s ? query(step.s) : null;
+    };
 
     // 안전한 클릭: SVG 등 .click()이 없는 요소도 처리. 가까운 버튼/링크로 위임
     const clickEl = (el: Element) => {
       const t =
-        (el.closest("button,[role='button'],a,[onclick],[tabindex]") as
-          | HTMLElement
-          | null) ?? (el as HTMLElement);
+        (el.closest(
+          "button,[role='button'],[role='switch'],[role='checkbox'],a,[onclick],[tabindex]"
+        ) as HTMLElement | null) ?? (el as HTMLElement);
       if (typeof t.click === "function") {
         t.click();
         return;
@@ -399,15 +518,16 @@ export default function HtmlViewer({
     log("선택", { trail, sel: pin.selector, txt: pin.anchorText });
 
     (async () => {
-      // 1) 현재 상태에 이미 있으면 즉시 스크롤 (새로고침 없음)
-      let el = found();
-      log("1) 현재 found?", !!el);
-      if (el) {
-        goTo(el);
+      // 1) 지금 "실제로 보이면" 즉시 스크롤 (새로고침 없음).
+      //    DOM엔 있으나 숨겨진(닫힌 모달/드로어 등) 경우는 재구성이 필요하므로 통과시킨다.
+      const visibleNow = pickVisible();
+      log("1) 지금 보임?", !!visibleNow);
+      if (visibleNow) {
+        goTo(visibleNow);
         return;
       }
 
-      // 2) 없으면(detail/탭/모달/드롭다운 등 어떤 상태든) 초기화 후 경로를 재생해 그 상태를 재구성
+      // 2) 안 보이면(다른 탭/닫힌 모달·드로어/드롭다운 등) 초기화 후 경로를 재생해 상태를 재구성
       log("2) reload 시작");
       await reloadIframe();
       if (cancelled) return;
@@ -419,37 +539,48 @@ export default function HtmlViewer({
           : null;
       }, 5000);
       if (cancelled) return;
-      log("2) reload 후 found?", !!found(), "trail 길이", trail.length);
-      // 초기 상태에서 바로 보이면(기본 목록 댓글) 재생 안 함 → 엉뚱한 클릭/모달 없음
-      if (!found() && trail.length) {
-        for (let i = 0; i < trail.length; i++) {
-          if (cancelled) return;
-          if (found()) break;
-          const nextSel = i + 1 < trail.length ? trail[i + 1] : null;
-          const ne = nextSel ? query(nextSel) : null;
-          if (ne && isVisible(ne)) {
-            log(`  단계 ${i} 건너뜀(다음 이미 존재):`, trail[i]);
-            continue;
+      log("2) reload 후 보임?", !!pickVisible(), "trail 길이", trail.length);
+      // 새로고침 직후 바로 보이면(기본 목록 댓글) 재생 안 함 → 엉뚱한 클릭 없음
+      if (!pickVisible() && trail.length) {
+        // 기록된 클릭을 순서대로 재생(탭 전환 → 상세 진입 → 모달/드로어 열기 등).
+        // 각 단계는 라벨 텍스트로 재탐색하므로 새 DOM 구조에서도 찾아낸다.
+        isReplayingRef.current = true;
+        // 전체 재생 예산: 노이즈 많은 경로에서도 과도한 대기(버벅임) 방지
+        const replayDeadline = Date.now() + 9000;
+        try {
+          for (let i = 0; i < trail.length; i++) {
+            if (cancelled) return;
+            if (pickVisible()) break;
+            if (Date.now() > replayDeadline) {
+              log("  재생 예산 초과 → 중단");
+              break;
+            }
+            const step = trail[i];
+            // 직전 클릭의 렌더가 반영될 때까지 짧게 대기 후 요소 확보
+            // (못 찾는 노이즈 단계에서 오래 매달리지 않도록 타임아웃을 줄임)
+            const el = await waitFor(() => resolveStep(step), 1200);
+            log(`  단계 ${i} 클릭:`, step.x || step.s, "찾음?", !!el);
+            if (cancelled) return;
+            if (el) {
+              clickEl(el);
+              const next = i + 1 < trail.length ? trail[i + 1] : null;
+              // 대상이 보이거나 다음 단계 요소가 준비되면 즉시 진행
+              await waitFor(
+                () => pickVisible() ?? (next ? resolveStep(next) : pickVisible()),
+                1800
+              );
+            }
           }
-          const step = await waitFor(() => query(trail[i]), 4000);
-          log(`  단계 ${i} 클릭:`, trail[i], "찾음?", !!step);
-          if (cancelled) return;
-          if (step) {
-            clickEl(step);
-            // 다음 단계 요소(또는 대상)가 나타나는 즉시 진행 — 고정 지연 제거
-            await waitFor(
-              () => found() ?? (nextSel ? query(nextSel) : found()),
-              3000
-            );
-          }
+          await waitFor(pickVisible, 2500);
+        } finally {
+          isReplayingRef.current = false;
         }
-        await waitFor(found, 3000);
         if (cancelled) return;
       }
 
-      // 3) 결과: 찾으면 스크롤, 아니면 좌표
-      el = found();
-      log("3) 최종 found?", !!el);
+      // 3) 결과: 보이면 스크롤 / DOM엔 있으나 숨었으면 강제 표시 후 스크롤 / 그래도 없으면 좌표
+      const el = pickVisible() ?? findTarget();
+      log("3) 최종 요소?", !!el, "보임?", !!pickVisible());
       if (el) {
         goTo(el);
         return;
@@ -459,6 +590,7 @@ export default function HtmlViewer({
 
     return () => {
       cancelled = true;
+      isReplayingRef.current = false;
     };
   }, [activePinId]);
 
@@ -515,7 +647,11 @@ export default function HtmlViewer({
     }
     const xPercent = rect.width ? (ix / rect.width) * 100 : 0;
     const yPercent = rect.height ? (iy / rect.height) * 100 : 0;
-    const openerSelector = JSON.stringify({ t: clickTrailRef.current, m: inModal });
+    const openerSelector = JSON.stringify({
+      v: 2,
+      t: clickTrailRef.current,
+      m: inModal,
+    });
     return { selector, offsetX, offsetY, anchorText, xPercent, yPercent, openerSelector };
   }, []);
 
@@ -635,15 +771,26 @@ export default function HtmlViewer({
       doc.addEventListener(
         "click",
         (e) => {
+          // 재생 중 발생한 프로그램 클릭은 기록하지 않음(경로 오염 방지)
+          if (isReplayingRef.current) return;
           const target = e.target as Element | null;
-          if (target && target.nodeType === 1) {
-            const sel = cssPath(target, doc);
-            if (sel) {
-              const t = clickTrailRef.current;
-              if (t[t.length - 1] !== sel) t.push(sel);
-              if (t.length > 15) t.shift();
-            }
-          }
+          if (!target || target.nodeType !== 1) return;
+          // 클릭 지점에서 가장 가까운 "행동 가능한" 요소(버튼/탭/행 등)를 트리거로 본다
+          const act =
+            (target.closest(ACTIONABLE) as Element | null) ?? target;
+          const step: TrailStep = {
+            s: cssPath(act, doc),
+            // 텍스트 라벨(견고 매칭용). 없으면 aria-label 등으로 대체
+            x: normLabel(act.textContent || "") || controlLabel(act),
+            g: act.tagName.toLowerCase(),
+          };
+          if (!step.s && !step.x) return;
+          const t = clickTrailRef.current;
+          const last = t[t.length - 1];
+          // 같은 요소 연속 클릭은 한 번만
+          if (!last || last.s !== step.s || last.x !== step.x) t.push(step);
+          // 깊은 탐색 경로도 담을 수 있게 넉넉히 보관(재생은 시간 예산으로 별도 제한)
+          if (t.length > 40) t.shift();
         },
         true
       );
