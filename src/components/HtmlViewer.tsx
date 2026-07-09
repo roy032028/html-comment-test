@@ -498,8 +498,18 @@ export default function HtmlViewer({
         const el = test();
         if (el) return el;
         if (Date.now() >= end) return null;
-        await delay(70);
+        await delay(20); // 촘촘히 폴링 → 준비되는 즉시 다음 클릭(재생이 휘리릭 지나감)
       }
+    };
+    // 재생 중 iframe의 트랜지션/애니메이션·부드러운 스크롤 제거 → 화면 전환이 즉시(빠르게)
+    const injectSpeedStyle = () => {
+      const d = getDoc();
+      if (!d || !d.head || d.getElementById("__replay_speed")) return;
+      const st = d.createElement("style");
+      st.id = "__replay_speed";
+      st.textContent =
+        "*,*::before,*::after{transition:none!important;animation:none!important;animation-duration:0s!important;scroll-behavior:auto!important}";
+      d.head.appendChild(st);
     };
     const reloadIframe = () =>
       new Promise<void>((resolve) => {
@@ -547,6 +557,7 @@ export default function HtmlViewer({
           : null;
       }, 5000);
       if (cancelled) return;
+      injectSpeedStyle(); // 전환/애니메이션 제거 → 재생이 빠르게 지나감
       log("2) reload 후 보임?", !!pickVisible(), "trail 길이", trail.length);
       // 새로고침 직후 바로 보이면(기본 목록 댓글) 재생 안 함 → 엉뚱한 클릭 없음
       if (!pickVisible() && trail.length) {
@@ -598,6 +609,7 @@ export default function HtmlViewer({
                   ? d.body
                   : null;
               }, 5000);
+              injectSpeedStyle();
               for (const step of navs) {
                 for (let k = 0; k < 40; k++) {
                   if (cancelled || pickVisible() || Date.now() > replayDeadline + 4000)
@@ -605,7 +617,7 @@ export default function HtmlViewer({
                   const el = resolveStep(step);
                   if (!el) break;
                   clickEl(el);
-                  await delay(90);
+                  await delay(40);
                 }
                 if (pickVisible() || cancelled) break;
               }
