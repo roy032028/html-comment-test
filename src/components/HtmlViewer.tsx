@@ -54,6 +54,45 @@ function elText(el: Element): string {
   return (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
+// 비교용 정규화: 숫자·기호·공백 제거 → 금액/수량 등 동적 값이 바뀌어도 같은 요소로 인식
+function normText(s: string): string {
+  return (s || "").replace(/[\s\d.,%₩()\-]/g, "");
+}
+
+// 문맥 서명: 요소 자체 텍스트가 없으면(아이콘 등) 가까운 조상의 텍스트를 사용 → 아이콘도 주변 텍스트로 식별
+function ctxText(el: Element): string {
+  let a: Element | null = el;
+  for (let i = 0; a && i < 6; i++) {
+    const t = normText(a.textContent || "");
+    if (t) return t.slice(0, 60);
+    a = a.parentElement;
+  }
+  return "";
+}
+
+// 후보 요소가 이 핀의 앵커와 일치하는지(문맥 서명 우선, 레거시는 요소 텍스트 비교도 허용)
+function matchesAnchor(el: Element, pin: Pin): boolean {
+  if (!pin.anchorText) return true;
+  return (
+    ctxText(el) === pin.anchorText ||
+    normText(elText(el)) === normText(pin.anchorText)
+  );
+}
+
+// openerSelector에 저장된 정보 파싱: 클릭 경로(trail)와 "모달 안에서 찍었는지"(inModal)
+function parseOpener(pin: Pin): { trail: string[]; inModal: boolean } {
+  if (!pin.openerSelector) return { trail: [], inModal: false };
+  try {
+    const p = JSON.parse(pin.openerSelector);
+    if (Array.isArray(p)) return { trail: p, inModal: false }; // 레거시(배열)
+    if (p && typeof p === "object")
+      return { trail: Array.isArray(p.t) ? p.t : [], inModal: !!p.m };
+  } catch {
+    /* 일반 문자열(아주 오래된 형식) */
+  }
+  return { trail: [pin.openerSelector], inModal: false };
+}
+
 // 선택자 충돌(탭 등 같은 구조) 시 텍스트 서명으로 올바른 요소를 고른다
 function findAnchoredEl(doc: Document, pin: Pin): Element | null {
   if (!pin.selector) return null;
@@ -66,20 +105,8 @@ function findAnchoredEl(doc: Document, pin: Pin): Element | null {
   const cands = Array.from(list);
   if (cands.length === 0) return null;
   if (!pin.anchorText) return cands[0];
-  // 텍스트가 일치하는 요소만 유효(없으면 다른 탭 등으로 보고 없음 처리)
-  return cands.find((el) => elText(el) === pin.anchorText) ?? null;
-}
-
-// 저장된 클릭 경로(탭/모달 등). 저장 순서(처음→끝) 그대로 반환 — 새로고침 후 순서대로 재생
-function openerTrail(pin: Pin): string[] {
-  if (!pin.openerSelector) return [];
-  try {
-    const parsed = JSON.parse(pin.openerSelector);
-    if (Array.isArray(parsed)) return parsed;
-  } catch {
-    /* 일반 문자열 */
-  }
-  return [pin.openerSelector];
+  // 문맥 서명으로 일치하는 것만(다른 탭/화면의 같은 구조 요소 오배치 방지)
+  return cands.find((el) => matchesAnchor(el, pin)) ?? null;
 }
 
 export default function HtmlViewer({
@@ -142,42 +169,46 @@ export default function HtmlViewer({
             continue;
           }
 
+          let placed = false;
           if (pin.selector) {
             const el = findAnchoredEl(doc, pin);
-            if (!el) {
-              btn.style.display = "none";
-              continue;
+            if (el) {
+              const r = el.getBoundingClientRect();
+              const cs = view.getComputedStyle(el);
+              const hidden =
+                (r.width === 0 && r.height === 0) ||
+                cs.visibility === "hidden" ||
+                cs.display === "none";
+              // 앵커 지점(iframe = 실제 뷰포트 좌표, 스케일 없음)
+              const x = r.left + (pin.offsetX ?? 0.5) * r.width;
+              const y = r.top + (pin.offsetY ?? 0.5) * r.height;
+              const inView = x >= 0 && x <= cw && y >= 0 && y <= ch;
+              // 가림 검사: 그 지점의 최상단 요소가 앵커 요소가 아니면(모달 등에 가려짐)
+              let occluded = false;
+              if (!hidden && inView) {
+                const topEl = doc.elementFromPoint(x, y);
+                occluded =
+                  !topEl ||
+                  !(topEl === el || el.contains(topEl) || topEl.contains(el));
+              }
+              if (!hidden && inView && !occluded) {
+                btn.style.display = "flex";
+                btn.style.left = `${x}px`;
+                btn.style.top = `${y}px`;
+                placed = true;
+              }
             }
-            const r = el.getBoundingClientRect();
-            const cs = view.getComputedStyle(el);
-            const hidden =
-              (r.width === 0 && r.height === 0) ||
-              cs.visibility === "hidden" ||
-              cs.display === "none";
-            // 앵커 지점(iframe = 실제 뷰포트 좌표, 스케일 없음)
-            const x = r.left + (pin.offsetX ?? 0.5) * r.width;
-            const y = r.top + (pin.offsetY ?? 0.5) * r.height;
-            const inView = x >= 0 && x <= cw && y >= 0 && y <= ch;
-            // 가림 검사: 그 지점의 최상단 요소가 앵커 요소가 아니면(모달 등에 가려짐) 숨김
-            let occluded = false;
-            if (!hidden && inView) {
-              const topEl = doc.elementFromPoint(x, y);
-              occluded =
-                !topEl ||
-                !(topEl === el || el.contains(topEl) || topEl.contains(el));
-            }
-            if (hidden || !inView || occluded) {
+          }
+          if (!placed) {
+            // 요소를 못 쓰면(컬럼 사라짐/다른 탭/모달 닫힘) 깔끔하게 숨김.
+            // 단, 선택자가 없는 레거시 핀만 좌표로 표시.
+            if (pin.selector) {
               btn.style.display = "none";
             } else {
               btn.style.display = "flex";
-              btn.style.left = `${x}px`;
-              btn.style.top = `${y}px`;
+              btn.style.left = `${(pin.xPercent / 100) * cw}px`;
+              btn.style.top = `${(pin.yPercent / 100) * ch}px`;
             }
-          } else {
-            // 레거시(좌표) 핀: 뷰포트 대비 %로 표시
-            btn.style.display = "flex";
-            btn.style.left = `${(pin.xPercent / 100) * cw}px`;
-            btn.style.top = `${(pin.yPercent / 100) * ch}px`;
           }
         }
       }
@@ -280,42 +311,126 @@ export default function HtmlViewer({
       });
     };
 
-    (async () => {
-      // 1) 현재 상태에 정확한 요소가 보이면 스크롤만(가장 빠름)
-      let el = findTarget();
-      if (el && isVisible(el)) {
-        el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    // 현재 화면에 그 선택자와 일치하는 "보이는" 요소(텍스트 일치 우선, 없으면 첫 매치)
+    const pickVisible = (): Element | null => {
+      const d = getDoc();
+      if (!d || !pin.selector) return null;
+      let list: NodeListOf<Element>;
+      try {
+        list = d.querySelectorAll(pin.selector);
+      } catch {
+        return null;
+      }
+      const vis = Array.from(list).filter((e) => isVisible(e));
+      if (vis.length === 0) return null;
+      if (!pin.anchorText) return vis[0];
+      // 문맥 서명으로 일치하는 것만(다른 탭/화면의 같은 구조 요소 오인 방지)
+      return vis.find((e) => matchesAnchor(e, pin)) ?? null;
+    };
+
+    const goTo = (el: Element) => {
+      if (!isVisible(el)) forceReveal(el);
+      el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    };
+
+    // 현재 요소(보이든 숨었든) 찾기
+    const found = (): Element | null => pickVisible() || findTarget();
+
+    // 안전한 클릭: SVG 등 .click()이 없는 요소도 처리. 가까운 버튼/링크로 위임
+    const clickEl = (el: Element) => {
+      const t =
+        (el.closest("button,[role='button'],a,[onclick],[tabindex]") as
+          | HTMLElement
+          | null) ?? (el as HTMLElement);
+      if (typeof t.click === "function") {
+        t.click();
         return;
       }
+      t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    };
 
-      // 2) 새로고침 없이 현재 상태에서 클릭 경로를 처음→끝 순서로 재생.
-      //    "다음 단계(또는 최종 대상)가 이미 보이면" 그 단계는 이미 수행된 것으로 보고 건너뛴다
-      //    → 이미 열린 detail의 행을 다시 눌러 닫아버리는 토글을 방지
-      const trail = pin.selector ? openerTrail(pin) : [];
-      for (let i = 0; i < trail.length; i++) {
-        if (cancelled) return;
-        const cur = findTarget();
-        if (cur && isVisible(cur)) break;
-        const nextSel = i + 1 < trail.length ? trail[i + 1] : null;
-        const nextEl = nextSel ? query(nextSel) : null;
-        if (nextEl && isVisible(nextEl)) continue; // 이 단계는 이미 도달함 → 건너뜀
-        const step = query(trail[i]);
-        if (step) {
-          (step as HTMLElement).click();
-          await delay(300);
-          if (cancelled) return;
+    const waitFor = async (
+      test: () => Element | null,
+      timeout: number
+    ): Promise<Element | null> => {
+      const end = Date.now() + timeout;
+      for (;;) {
+        if (cancelled) return null;
+        const el = test();
+        if (el) return el;
+        if (Date.now() >= end) return null;
+        await delay(120);
+      }
+    };
+    const reloadIframe = () =>
+      new Promise<void>((resolve) => {
+        const ifr = iframeRef.current;
+        if (!ifr) return resolve();
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          ifr.removeEventListener("load", finish);
+          resolve();
+        };
+        ifr.addEventListener("load", finish);
+        try {
+          ifr.contentWindow?.location.reload();
+        } catch {
+          ifr.src = ifr.src;
         }
-      }
+        window.setTimeout(finish, 6000);
+      });
 
-      // 3) 정확한 요소 → 없으면 텍스트 무시 첫 요소라도 → 스크롤
-      el = findTarget() || (pin.selector ? query(pin.selector) : null);
+    const { trail } = parseOpener(pin);
+    const log = (...a: unknown[]) => console.log("[핀이동]", ...a);
+    log("선택", { trail, sel: pin.selector, txt: pin.anchorText });
+
+    (async () => {
+      // 1) 현재 상태에 이미 있으면 즉시 스크롤 (새로고침 없음)
+      let el = found();
+      log("1) 현재 found?", !!el);
       if (el) {
-        if (!isVisible(el)) forceReveal(el);
-        el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        goTo(el);
         return;
       }
 
-      // 4) 끝내 못 찾으면 저장된 좌표로 대략 이동 — 무조건 화면 전환
+      // 2) 없으면(detail/탭/모달/드롭다운 등 어떤 상태든) 초기화 후 경로를 재생해 그 상태를 재구성
+      log("2) reload 시작");
+      await reloadIframe();
+      if (cancelled) return;
+      await delay(1000); // 프레임워크 렌더 대기(큰 번들)
+      log("2) reload 후 found?", !!found(), "trail 길이", trail.length);
+      // 초기 상태에서 바로 보이면(기본 목록 댓글) 재생 안 함 → 엉뚱한 클릭/모달 없음
+      if (!found() && trail.length) {
+        for (let i = 0; i < trail.length; i++) {
+          if (cancelled) return;
+          if (found()) break;
+          const nextSel = i + 1 < trail.length ? trail[i + 1] : null;
+          const ne = nextSel ? query(nextSel) : null;
+          if (ne && isVisible(ne)) {
+            log(`  단계 ${i} 건너뜀(다음 이미 존재):`, trail[i]);
+            continue;
+          }
+          const step = await waitFor(() => query(trail[i]), 4000);
+          log(`  단계 ${i} 클릭:`, trail[i], "찾음?", !!step);
+          if (cancelled) return;
+          if (step) {
+            clickEl(step);
+            await delay(500);
+          }
+        }
+        await waitFor(found, 4000);
+        if (cancelled) return;
+      }
+
+      // 3) 결과: 찾으면 스크롤, 아니면 좌표
+      el = found();
+      log("3) 최종 found?", !!el);
+      if (el) {
+        goTo(el);
+        return;
+      }
       scrollToCoord();
     })();
 
@@ -344,23 +459,47 @@ export default function HtmlViewer({
       let offsetX = 0.5;
       let offsetY = 0.5;
       let anchorText: string | null = null;
+      let inModal = false;
       const doc = iframeRef.current?.contentDocument;
+      const win = iframeRef.current?.contentWindow;
       if (doc) {
         const el = doc.elementFromPoint(ix, iy);
         if (el) {
           selector = cssPath(el, doc);
-          anchorText = elText(el);
+          anchorText = ctxText(el); // 문맥 서명(아이콘 등 텍스트 없어도 주변 텍스트로 식별)
           const r = el.getBoundingClientRect();
           if (r.width > 0) offsetX = (ix - r.left) / r.width;
           if (r.height > 0) offsetY = (iy - r.top) / r.height;
+          // 이 요소가 오버레이(모달/드롭다운/팝오버 등 떠 있는 레이어) 안인지 판별
+          if (win) {
+            const vw = win.innerWidth;
+            const vh = win.innerHeight;
+            let a: HTMLElement | null = el.parentElement;
+            while (a) {
+              const cs = win.getComputedStyle(a);
+              if (cs.position === "fixed" || cs.position === "absolute") {
+                const z = parseInt(cs.zIndex || "0", 10);
+                const ar = a.getBoundingClientRect();
+                const large = ar.width > vw * 0.5 && ar.height > vh * 0.4;
+                // fixed(모달) / 큰 박스(모달) / z-index 높은 absolute(드롭다운·팝오버)
+                if (cs.position === "fixed" || large || (Number.isFinite(z) && z >= 10)) {
+                  inModal = true;
+                  break;
+                }
+              }
+              a = a.parentElement;
+            }
+          }
         }
       }
 
       const xPercent = rect.width ? (ix / rect.width) * 100 : 0;
       const yPercent = rect.height ? (iy / rect.height) * 100 : 0;
-      const openerSelector = clickTrailRef.current.length
-        ? JSON.stringify(clickTrailRef.current)
-        : null;
+      // 클릭 경로 + 모달 여부를 함께 저장
+      const openerSelector = JSON.stringify({
+        t: clickTrailRef.current,
+        m: inModal,
+      });
 
       // 낙관적: 즉시 핀을 표시하고 저장은 백그라운드에서 처리(서버 왕복 대기 제거)
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -440,7 +579,7 @@ export default function HtmlViewer({
             if (sel) {
               const t = clickTrailRef.current;
               if (t[t.length - 1] !== sel) t.push(sel);
-              if (t.length > 6) t.shift();
+              if (t.length > 15) t.shift();
             }
           }
         },
