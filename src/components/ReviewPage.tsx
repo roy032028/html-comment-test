@@ -25,10 +25,17 @@ export default function ReviewPage({
   const [isPlacingPin, setIsPlacingPin] = useState(false);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [pinsHidden, setPinsHidden] = useState(false);
+  const [showNameHint, setShowNameHint] = useState(true);
 
   useEffect(() => {
     const saved = localStorage.getItem(AUTHOR_NAME_KEY);
     if (saved) setAuthorName(saved);
+  }, []);
+
+  // 이름 안내 배너는 5초 뒤 자동으로 사라짐
+  useEffect(() => {
+    const t = setTimeout(() => setShowNameHint(false), 5000);
+    return () => clearTimeout(t);
   }, []);
 
   const saveAuthorName = (name: string) => {
@@ -209,8 +216,8 @@ export default function ReviewPage({
       />
 
       <main className="flex-1 min-h-0 relative">
-        {!authorName && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm px-4 py-2 rounded-lg shadow-sm">
+        {!authorName && showNameHint && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm px-4 py-2 rounded-lg shadow-sm transition-opacity duration-500">
             상단에서 이름을 입력하면 댓글을 남길 수 있습니다.
           </div>
         )}
