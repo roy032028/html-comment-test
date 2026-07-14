@@ -34,33 +34,57 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
     setUploadError(null);
 
     try {
-      // 업로드 전 브라우저에서 gzip 압축 (Vercel 함수 요청 4.5MB 한도 회피)
+      // 업로드 전 브라우저에서 gzip 압축
       const gzStream = file.stream().pipeThrough(new CompressionStream("gzip"));
-      const gzBlob = await new Response(gzStream).blob();
+      const gz = new Uint8Array(await new Response(gzStream).arrayBuffer());
 
-      const formData = new FormData();
-      formData.append("filename", file.name);
-      formData.append("file", gzBlob, file.name);
+      // Vercel 요청 4.5MB 한도를 넘기려면 3MB 바이트 청크로 나눠 올리고 서버가 이어붙인다.
+      const CHUNK = 3_000_000;
+      const toB64 = (u8: Uint8Array) => {
+        let s = "";
+        const c = 0x8000;
+        for (let i = 0; i < u8.length; i += c)
+          s += String.fromCharCode(...u8.subarray(i, i + c));
+        return btoa(s);
+      };
 
+      // 1) 첫 청크로 파일 생성
+      const first = gz.subarray(0, Math.min(CHUNK, gz.length));
       const res = await fetch(`/api/projects/${projectId}/upload`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, data: toB64(first) }),
       });
-
-      if (res.ok) {
-        await fetchProject();
-      } else if (res.status === 413) {
-        setUploadError(
-          "업로드 실패: 파일이 너무 큽니다 (압축 후에도 4.5MB 초과). 이미지가 많이 인라인된 HTML입니다."
-        );
-      } else {
+      if (!res.ok) {
         let detail = `${res.status}`;
         try {
-          const data = await res.json();
-          if (data?.error) detail = `${data.error} (${res.status})`;
+          const d = await res.json();
+          if (d?.error) detail = `${d.error} (${res.status})`;
         } catch {}
         setUploadError(`업로드 실패: ${detail}`);
+        return;
       }
+      const { id: fileId } = await res.json();
+
+      // 2) 나머지 청크 이어붙이기
+      for (let i = CHUNK; i < gz.length; i += CHUNK) {
+        const slice = gz.subarray(i, Math.min(i + CHUNK, gz.length));
+        const ar = await fetch(
+          `/api/projects/${projectId}/files/${fileId}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ append: toB64(slice) }),
+          }
+        );
+        if (!ar.ok) {
+          setUploadError(
+            `업로드 실패: 큰 파일 저장 중 오류 (${ar.status}). 다시 시도해 주세요.`
+          );
+          return;
+        }
+      }
+      await fetchProject();
     } catch (err) {
       setUploadError(
         `업로드 실패: ${err instanceof Error ? err.message : "알 수 없는 오류"}`

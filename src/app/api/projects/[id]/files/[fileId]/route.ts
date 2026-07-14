@@ -39,6 +39,37 @@ export async function GET(
   });
 }
 
+// 업로드 청크 이어붙이기: 기존 content 뒤에 base64 청크를 붙인다(큰 파일 분할 업로드).
+export async function PUT(
+  request: Request,
+  { params }: { params: Promise<{ id: string; fileId: string }> }
+) {
+  const { id: projectId, fileId } = await params;
+  const body = await request.json().catch(() => null);
+  const chunk: string = typeof body?.append === "string" ? body.append : "";
+  if (!chunk) {
+    return NextResponse.json({ error: "잘못된 요청" }, { status: 400 });
+  }
+
+  const file = await db
+    .select({ content: files.content, projectId: files.projectId })
+    .from(files)
+    .where(eq(files.id, fileId))
+    .get();
+  if (!file || file.projectId !== projectId) {
+    return NextResponse.json({ error: "파일을 찾을 수 없습니다" }, { status: 404 });
+  }
+
+  const raw: unknown = file.content;
+  const prev = Buffer.isBuffer(raw)
+    ? raw
+    : Buffer.from((raw as Uint8Array) ?? []);
+  const merged = Buffer.concat([prev, Buffer.from(chunk, "base64")]);
+  await db.update(files).set({ content: merged }).where(eq(files.id, fileId));
+
+  return NextResponse.json({ ok: true });
+}
+
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string; fileId: string }> }
