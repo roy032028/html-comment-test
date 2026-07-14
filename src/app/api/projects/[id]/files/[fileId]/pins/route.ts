@@ -10,8 +10,14 @@ export async function GET(
 ) {
   const { id: projectId, fileId } = await params;
 
+  // 파일명/메타만 필요 → 무거운 content 블롭은 조회하지 않는다(iframe이 따로 로드).
   const file = await db
-    .select()
+    .select({
+      id: files.id,
+      projectId: files.projectId,
+      filename: files.filename,
+      createdAt: files.createdAt,
+    })
     .from(files)
     .where(eq(files.id, fileId))
     .get();
