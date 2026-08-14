@@ -17,55 +17,17 @@ if (url.startsWith("file:")) {
 
 const client = createClient({ url, authToken });
 
-// 스키마 보장 (top-level await → db를 import하는 쪽은 이 초기화가 끝난 뒤 실행됨)
-await client.executeMultiple(`
-  CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+// 스키마 DDL은 요청 경로에서 실행하지 않는다.
+// 예전에는 여기서 top-level await로 CREATE TABLE + ALTER TABLE을 돌렸는데,
+// 서버리스에서는 콜드스타트마다 원격 DB로 직렬 왕복 6회를 지불하는 꼴이었다
+// (그것도 `db`를 import하는 모든 함수에서 각각). 그래서 프로덕션은 `npm run db:init`
+// 1회 적용으로 옮기고, 여기서는 로컬 파일 DB 편의만 남긴다.
+if (url.startsWith("file:")) {
+  const sql = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "schema.sql"),
+    "utf8"
   );
-  CREATE TABLE IF NOT EXISTS files (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL,
-    content BLOB NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS pins (
-    id TEXT PRIMARY KEY,
-    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    x_percent REAL NOT NULL,
-    y_percent REAL NOT NULL,
-    selector TEXT,
-    offset_x REAL,
-    offset_y REAL,
-    anchor_text TEXT,
-    opener_selector TEXT,
-    author_name TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS comments (
-    id TEXT PRIMARY KEY,
-    pin_id TEXT NOT NULL REFERENCES pins(id) ON DELETE CASCADE,
-    author_name TEXT NOT NULL,
-    body TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-`);
-
-// 기존 DB(이미 pins 테이블이 있는 경우)에 앵커 컬럼 추가 — 이미 있으면 무시
-for (const stmt of [
-  "ALTER TABLE pins ADD COLUMN selector TEXT",
-  "ALTER TABLE pins ADD COLUMN offset_x REAL",
-  "ALTER TABLE pins ADD COLUMN offset_y REAL",
-  "ALTER TABLE pins ADD COLUMN anchor_text TEXT",
-  "ALTER TABLE pins ADD COLUMN opener_selector TEXT",
-]) {
-  try {
-    await client.execute(stmt);
-  } catch {
-    // 컬럼이 이미 존재하면 발생하는 오류는 무시
-  }
+  await client.executeMultiple(sql);
 }
 
 export const db = drizzle(client, { schema });

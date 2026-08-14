@@ -1,11 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Project } from "@/lib/types";
 
-export default function ProjectPage({ projectId }: { projectId: string }) {
-  const [project, setProject] = useState<Project | null>(null);
-  const [loading, setLoading] = useState(true);
+export default function ProjectPage({
+  projectId,
+  // 서버에서 미리 조회해 넘겨주면 첫 페인트부터 목록이 보인다(스피너·추가 왕복 없음).
+  // 넘기지 않으면 기존처럼 마운트 후 클라이언트에서 조회한다.
+  initialProject,
+}: {
+  projectId: string;
+  initialProject?: Project | null;
+}) {
+  const [project, setProject] = useState<Project | null>(initialProject ?? null);
+  const [loading, setLoading] = useState(!initialProject);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -23,7 +31,15 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
     setLoading(false);
   }, [projectId]);
 
+  // 서버가 넘겨준 데이터가 있으면 마운트 직후 재조회는 건너뛴다.
+  // (업로드·삭제 후의 fetchProject 호출은 그대로 동작)
+  const skipInitialFetch = useRef(Boolean(initialProject));
+
   useEffect(() => {
+    if (skipInitialFetch.current) {
+      skipInitialFetch.current = false;
+      return;
+    }
     fetchProject();
   }, [fetchProject]);
 
